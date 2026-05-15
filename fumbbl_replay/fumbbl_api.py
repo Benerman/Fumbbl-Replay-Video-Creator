@@ -23,14 +23,28 @@ BASE = "https://fumbbl.com"
 USER_AGENT = "fumbbl-replay-video-creator/0.1"
 
 
-def fetch_match_summary(game_id: int) -> dict[str, Any]:
-    url = f"{BASE}/api/match/get/{game_id}"
+def fetch_match_summary(match_id: int) -> dict[str, Any]:
+    return _get_json(f"{BASE}/api/match/get/{match_id}", what=f"match {match_id}")
+
+
+def fetch_team(team_id: int) -> dict[str, Any]:
+    return _get_json(f"{BASE}/api/team/get/{team_id}", what=f"team {team_id}")
+
+
+def image_url(image_id: int | None) -> str | None:
+    """FUMBBL serves uploaded images (team logos, player portraits) at /i/{id}."""
+    if not image_id:
+        return None
+    return f"{BASE}/i/{image_id}"
+
+
+def _get_json(url: str, *, what: str) -> dict[str, Any]:
     log.info("GET %s", url)
     r = requests.get(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}, timeout=30)
     r.raise_for_status()
     data = r.json()
     if isinstance(data, str) and data.startswith("Error"):
-        raise RuntimeError(f"FUMBBL returned error: {data}")
-    if not data or "team1" not in data:
-        raise RuntimeError(f"no match summary returned for {game_id}: {data!r}")
+        raise RuntimeError(f"FUMBBL returned error for {what}: {data}")
+    if not data:
+        raise RuntimeError(f"empty response for {what}")
     return data

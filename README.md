@@ -7,69 +7,90 @@ cards.
 
 ## Current state: pivotal-play analyzer
 
-The first piece is a CLI that, given a FUMBBL replay reference, prints
-the plays that mattered most:
+The first piece is a CLI that, given a FUMBBL match id, prints the
+plays that mattered most plus the assets we have to draw with (team
+logos, player portraits):
 
 ```
-$ python -m fumbbl_replay https://fumbbl.com/ffblive.jnlp?replay=1901135
+$ python -m fumbbl_replay 4700555
 
-  #1901135 (2007-10-28, Ranked) Neck Snappers [Orc, Ballcrusher] 1 - 2 Torcy United [Orc, Tathar]
-  -----------------------------------------------------------------------------------------
-  Winner: Torcy United (by 1)
+  #4700555 (2026-05-15, League) Karag Dum Doomkillers [Chaos Renegade, TheRedoubt] 1 - 0 Norse 10 From Averone [Norse, Mully]
+  ---------------------------------------------------------------------------------------------------------------------------
+  Winner: Karag Dum Doomkillers (by 1)
 
-  Pivotal plays (5):
-     1. [1.00] Torcy United scored a touchdown
-     2. [1.00] Torcy United scored a touchdown
-     3. [1.00] Neck Snappers scored a touchdown
-     4. [0.80] Neck Snappers had a player killed
-     5. [0.50] Torcy United had a player seriously injured
+  Karag Dum Doomkillers (Chaos Renegade, coach TheRedoubt) - TV 1440k
+     logo: https://fumbbl.com/i/752241
+     roster: 13 players
+     casualties suffered: BH=1 SI=1 RIP=0
+
+  Norse 10 From Averone (Norse, coach Mully) - TV 1350k
+     roster: 12 players
+     casualties suffered: BH=1 SI=2 RIP=0
+
+  Pivotal plays (6):
+     1. [1.00] Karag Dum Doomkillers scored a touchdown
+     2. [0.50] Karag Dum Doomkillers had a player seriously injured
+     3. [0.50] Norse 10 From Averone had a player seriously injured
+     4. [0.50] Norse 10 From Averone had a player seriously injured
+     5. [0.20] Karag Dum Doomkillers had a player knocked out
+     6. [0.20] Norse 10 From Averone had a player knocked out
 ```
 
-The `<replay-ref>` you pass can be a FUMBBL replay URL, a local
-`.jnlp` file path, or a bare game id.
+`--json` mode emits the full structured analysis (each pivotal play,
+each player on each team with portrait URLs, etc.) for downstream tools.
 
 ### How it works
 
-1. **`jnlp_loader.py`** - resolves the input to a game id. If you pass
-   a URL, it pulls `?replay=N` from the query string (and, where
-   useful, also fetches the JNLP to read `-gameId` arguments).
-2. **`fumbbl_api.py`** - fetches the match summary from
-   `https://fumbbl.com/api/match/get/{id}` (no auth needed).
-3. **`analyzer.py`** - scores plays by win-probability impact:
+1. **`fumbbl_api.py`** wraps the two endpoints we need:
+   - `GET /api/match/get/{id}` for the match summary (teams, score, casualties)
+   - `GET /api/team/get/{id}` for the team roster + bio (logo, players)
+   - `image_url(id)` builds the `https://fumbbl.com/i/{id}` asset URL
+     that serves logos and portraits as PNGs.
+2. **`analyzer.py`** scores plays by win-probability impact:
    touchdowns at 1.0, kills (RIP) at 0.8, serious injuries at 0.5,
-   knock-outs at 0.2. Returns a ranked list.
+   knock-outs at 0.2. It returns a `MatchAnalysis` containing both
+   teams (with logo/portrait URLs) and the ranked play list.
 
-### Limits today
+### What we know and don't know
 
-The match summary endpoint doesn't include the per-turn event log -
-that data lives behind the FFB websocket on port 22223 and isn't
-exposed via plain HTTP. So right now the analyzer knows that N TDs
-were scored but not when or by whom, and that M casualties happened
-but not which player. The output is still useful as a "did this match
-matter?" filter and as the skeleton for the highlight reel.
+We **do** have, per match, from plain HTTP:
+- Final score, division, date
+- Both teams' name, race, coach, team value
+- Both teams' casualty box-score (BH/SI/RIP counts)
+- Both teams' full current roster, each player's name, number,
+  position, skills, and a portrait image URL
+- Team logo image URL
 
-When we add a websocket client (see notes in `jnlp_loader.py`) we'll
-augment each `PivotalPlay` with turn number, player names, and the
-dice rolls behind each result.
+We **don't** have, via plain HTTP:
+- Per-turn pitch positions
+- Who scored each touchdown
+- Who suffered each casualty (the roster gives current state, not the
+  per-match snapshot)
+- Dice rolls
+
+That richer event log lives behind the FFB websocket on port 22223
+(not currently used). So today's analyzer ranks plays at the
+team level, not the player level.
 
 ## Roadmap
 
-| Stage                                  | Status  |
-|----------------------------------------|---------|
-| Resolve replay ref to game id          | done    |
-| Fetch + parse match summary            | done    |
-| Rank pivotal plays from summary        | done    |
-| Pull per-turn event log via FFB ws     | todo    |
-| Capture retro visuals per highlight    | todo    |
-| LLM commentary script + TTS narration  | todo    |
-| ffmpeg compose final mp4               | todo    |
+| Stage                                       | Status  |
+|---------------------------------------------|---------|
+| Match id input, summary + roster fetch      | done    |
+| Rank pivotal plays from team-level data     | done    |
+| Surface logo + portrait asset URLs          | done    |
+| Pull per-turn event log via FFB websocket   | todo    |
+| Render stylized pitch tableaux per play     | todo    |
+| LLM commentary script + TTS narration       | todo    |
+| ffmpeg compose final mp4                    | todo    |
 
 ## Install / run
 
 ```bash
 pip install -r requirements.txt
-python -m fumbbl_replay https://fumbbl.com/ffblive.jnlp?replay=1901135
-python -m fumbbl_replay 1901135 --json
+python -m fumbbl_replay 4700555
+python -m fumbbl_replay 4700555 --json
+python -m fumbbl_replay 4700555 --no-rosters   # skip the two roster GETs
 ```
 
 ## License

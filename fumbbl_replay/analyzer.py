@@ -1,27 +1,31 @@
 """Identify pivotal plays from a FUMBBL match.
 
-This is the first concrete deliverable: given the match summary JSON,
-emit a ranked list of plays that mattered most.
+Given a match summary (and optionally the two team rosters), emit a
+ranked list of plays that mattered most plus the assets we know we
+have to draw with: team logos and player portraits.
 
 A "pivotal play" is currently one of:
 
   * a touchdown   - scoring is by definition impactful
-  * an injury     - BH (knocked silly for the rest of the drive),
-                    SI (out of game, lingering effect on roster),
-                    RIP (player dies, hardest possible swing)
+  * an injury     - BH (knocked out, lingering effect on drive),
+                    SI (out of game, roster-level impact),
+                    RIP (dead, hardest possible swing)
 
-We score each play by how much it moved the win-probability needle
-(rough heuristic: TDs by 1.0, KILLS by 0.8, SI by 0.5, BH by 0.2). When
-the event log becomes available those scores can be refined with
-context like "score-tying TD in turn 16" or "casualty on a star player".
+Each play is weighted by rough win-probability impact:
+  TD 1.0, RIP 0.8, SI 0.5, BH 0.2.
+When the per-turn event log becomes available we can refine with
+context like "score-tying TD in the last turn" or "casualty on a
+star player".
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-# Win-probability weights. Higher = more pivotal.
+from .fumbbl_api import image_url
+
+
 _CASUALTY_WEIGHT = {"rip": 0.8, "si": 0.5, "bh": 0.2}
 _TD_WEIGHT = 1.0
 
@@ -32,110 +36,151 @@ class PivotalPlay:
     detail: str        # "RIP" / "SI" / "BH" for casualties, "" for TDs
     team_id: int
     team_name: str
-    against_team: str  # for color in the script
+    against_team: str
     weight: float
 
     def headline(self) -> str:
         if self.kind == "touchdown":
             return f"{self.team_name} scored a touchdown"
-        sev = {"rip": "killed", "si": "seriously injured", "bh": "knocked out"}.get(self.detail.lower(), self.detail)
-        # Casualties from the summary are attributed to the team that
-        # *suffered* them - so "team X had a player killed".
+        sev = {"rip": "killed", "si": "seriously injured", "bh": "knocked out"}.get(
+            self.detail.lower(), self.detail
+        )
         return f"{self.team_name} had a player {sev}"
 
 
 @dataclass
+class TeamInfo:
+    id: int
+    name: str
+    race: str
+    coach: str
+    score: int
+    team_value: int
+    logo_url: str | None
+    casualties: dict[str, int]
+    players: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def player_count(self) -> int:
+        return len(self.players)
+
+
+@dataclass
 class MatchAnalysis:
-    game_id: int
-    home_name: str
-    away_name: str
-    home_coach: str
-    away_coach: str
-    home_score: int
-    away_score: int
-    race_home: str
-    race_away: str
+    match_id: int
+    replay_id: int
     date: str
     division: str
+    home: TeamInfo
+    away: TeamInfo
     winner: str | None
     margin: int
     pivotal: list[PivotalPlay]
 
     def summary_line(self) -> str:
         return (
-            f"#{self.game_id} ({self.date}, {self.division}) "
-            f"{self.home_name} [{self.race_home}, {self.home_coach}] {self.home_score}"
+            f"#{self.match_id} ({self.date}, {self.division}) "
+            f"{self.home.name} [{self.home.race}, {self.home.coach}] {self.home.score}"
             f" - "
-            f"{self.away_score} {self.away_name} [{self.race_away}, {self.away_coach}]"
+            f"{self.away.score} {self.away.name} [{self.away.race}, {self.away.coach}]"
         )
 
 
-def analyze(summary: dict[str, Any]) -> MatchAnalysis:
-    home = summary["team1"]
-    away = summary["team2"]
+def analyze(
+    summary: dict[str, Any],
+    team_home: dict[str, Any] | None = None,
+    team_away: dict[str, Any] | None = None,
+) -> MatchAnalysis:
+    home_raw = summary["team1"]
+    away_raw = summary["team2"]
+    home = _team_info(home_raw, team_home)
+    away = _team_info(away_raw, team_away)
 
     pivotal: list[PivotalPlay] = []
+    for _ in range(home.score):
+        pivotal.append(_td(home, away))
+    for _ in range(away.score):
+        pivotal.append(_td(away, home))
 
-    # 1. Touchdowns. Summary only tells us how many each side scored,
-    #    not when or by whom. Emit one PivotalPlay per TD anyway -
-    #    when the event log lands we'll replace these with timed plays.
-    for _ in range(home.get("score", 0)):
-        pivotal.append(PivotalPlay(
-            kind="touchdown", detail="",
-            team_id=home["id"], team_name=home["name"],
-            against_team=away["name"], weight=_TD_WEIGHT,
-        ))
-    for _ in range(away.get("score", 0)):
-        pivotal.append(PivotalPlay(
-            kind="touchdown", detail="",
-            team_id=away["id"], team_name=away["name"],
-            against_team=home["name"], weight=_TD_WEIGHT,
-        ))
-
-    # 2. Casualties suffered by each team.
     for team, opp in ((home, away), (away, home)):
-        cas = team.get("casualties") or {}
-        for sev_key in ("rip", "si", "bh"):
-            for _ in range(cas.get(sev_key, 0)):
+        for sev in ("rip", "si", "bh"):
+            for _ in range(team.casualties.get(sev, 0)):
                 pivotal.append(PivotalPlay(
-                    kind="casualty", detail=sev_key.upper(),
-                    team_id=team["id"], team_name=team["name"],
-                    against_team=opp["name"],
-                    weight=_CASUALTY_WEIGHT[sev_key],
+                    kind="casualty", detail=sev.upper(),
+                    team_id=team.id, team_name=team.name,
+                    against_team=opp.name,
+                    weight=_CASUALTY_WEIGHT[sev],
                 ))
 
-    # Highest impact first.
     pivotal.sort(key=lambda p: p.weight, reverse=True)
 
-    home_score = int(home.get("score", 0))
-    away_score = int(away.get("score", 0))
-    if home_score > away_score:
-        winner = home["name"]
-    elif away_score > home_score:
-        winner = away["name"]
+    if home.score > away.score:
+        winner = home.name
+    elif away.score > home.score:
+        winner = away.name
     else:
         winner = None
 
     return MatchAnalysis(
-        game_id=int(summary.get("id", 0)),
-        home_name=home["name"],
-        away_name=away["name"],
-        home_coach=(home.get("coach") or {}).get("name", "Unknown"),
-        away_coach=(away.get("coach") or {}).get("name", "Unknown"),
-        home_score=home_score,
-        away_score=away_score,
-        race_home=(home.get("roster") or {}).get("name", "Unknown"),
-        race_away=(away.get("roster") or {}).get("name", "Unknown"),
+        match_id=int(summary.get("id", 0)),
+        replay_id=int(summary.get("replayId", 0) or 0),
         date=summary.get("date", ""),
         division=summary.get("division", ""),
+        home=home,
+        away=away,
         winner=winner,
-        margin=abs(home_score - away_score),
+        margin=abs(home.score - away.score),
         pivotal=pivotal,
     )
 
 
+def _team_info(match_team: dict[str, Any], full: dict[str, Any] | None) -> TeamInfo:
+    coach = match_team.get("coach") or {}
+    if isinstance(coach, dict):
+        coach_name = coach.get("name", "Unknown")
+    else:
+        coach_name = str(coach)
+    roster = match_team.get("roster")
+    race = roster.get("name") if isinstance(roster, dict) else (roster or "Unknown")
+
+    logo_id = None
+    players: list[dict[str, Any]] = []
+    if full:
+        bio = full.get("bio") or {}
+        logo_id = bio.get("image") or full.get("logo")
+        for p in full.get("players") or []:
+            players.append({
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "number": p.get("number"),
+                "position": p.get("position"),
+                "skills": p.get("skills") or [],
+                "portrait_url": image_url(p.get("portrait")),
+                "injuries": p.get("injuries") or "",
+            })
+
+    return TeamInfo(
+        id=int(match_team.get("id", 0)),
+        name=match_team.get("name", "Unknown"),
+        race=race,
+        coach=coach_name,
+        score=int(match_team.get("score", 0)),
+        team_value=int(match_team.get("teamValue", 0)),
+        logo_url=image_url(logo_id),
+        casualties=dict(match_team.get("casualties") or {}),
+        players=players,
+    )
+
+
+def _td(team: TeamInfo, opp: TeamInfo) -> PivotalPlay:
+    return PivotalPlay(
+        kind="touchdown", detail="",
+        team_id=team.id, team_name=team.name, against_team=opp.name,
+        weight=_TD_WEIGHT,
+    )
+
+
 def format_report(a: MatchAnalysis) -> str:
-    """Human-readable terminal report."""
     lines = [
         "",
         "  " + a.summary_line(),
@@ -144,11 +189,21 @@ def format_report(a: MatchAnalysis) -> str:
     if a.winner:
         lines.append(f"  Winner: {a.winner} (by {a.margin})")
     else:
-        lines.append(f"  Draw, {a.home_score}-{a.away_score}")
+        lines.append(f"  Draw, {a.home.score}-{a.away.score}")
+
+    for t in (a.home, a.away):
+        lines.append("")
+        lines.append(f"  {t.name} ({t.race}, coach {t.coach}) - TV {t.team_value//1000}k")
+        if t.logo_url:
+            lines.append(f"     logo: {t.logo_url}")
+        if t.players:
+            lines.append(f"     roster: {t.player_count} players")
+        lines.append(f"     casualties suffered: BH={t.casualties.get('bh',0)} SI={t.casualties.get('si',0)} RIP={t.casualties.get('rip',0)}")
+
     lines.append("")
     lines.append(f"  Pivotal plays ({len(a.pivotal)}):")
     if not a.pivotal:
-        lines.append("    (no scoring or casualties recorded in summary)")
+        lines.append("    (no scoring or casualties recorded)")
     for i, p in enumerate(a.pivotal, 1):
         lines.append(f"    {i:2d}. [{p.weight:.2f}] {p.headline()}")
     lines.append("")
