@@ -35,6 +35,12 @@ _BASE_CASUALTY_WEIGHT = {"rip": 0.8, "si": 0.5, "bh": 0.2}
 _BASE_TD_WEIGHT = 1.0
 _BASE_INT_WEIGHT = 0.7
 
+# Epic-fail base weights
+_BASE_SELF_KILL_WEIGHT = 1.5      # rolled-into-the-grave deserves top billing
+_BASE_TRIPLE_SKULL_WEIGHT = 0.9
+_BASE_DOUBLE_SKULL_WEIGHT = 0.4
+_BASE_CLUTCH_FAIL_WEIGHT = 1.0    # bumped on the analyzer pass if the team didn't win
+
 # TD context modifiers (additive, capped at +1.0 total)
 _TD_MOD_GAME_WINNING = 0.6
 _TD_MOD_TYING = 0.4
@@ -46,11 +52,16 @@ _TD_MOD_CAP = 1.0
 _CAS_MOD_FOUL = 0.2
 _CAS_MOD_CROWD = -0.1
 
+# Epic-fail context modifiers
+_CLUTCH_MOD_NO_WIN = 0.4          # failed pickup AND team didn't win → costlier
+_DOUBLE_SKULL_STREAK_THRESHOLD = 2  # 2+ double-skulls per side flags the streak
+
 
 @dataclass
 class PivotalPlay:
-    kind: str          # "touchdown" | "casualty" | "interception"
-    detail: str        # "RIP" / "SI" / "BH" for casualties; "" otherwise
+    kind: str          # "touchdown" | "casualty" | "interception" | "self_kill"
+                       # | "triple_skull" | "double_skull" | "clutch_fail"
+    detail: str        # "RIP" / "SI" / "BH" for casualties; injury label / dice for blunders; "" otherwise
     team_id: int
     team_name: str
     against_team: str
@@ -78,6 +89,21 @@ class PivotalPlay:
         if self.kind == "interception":
             actor = f"{self.player_name} ({self.team_name})" if self.player_name else self.team_name
             return f"{actor} intercepted a pass{when}"
+        if self.kind == "self_kill":
+            actor = f"{self.player_name} ({self.team_name})" if self.player_name else f"a {self.team_name} player"
+            cause = _self_kill_phrase(self.reason)
+            return f"{actor} {cause} - and never got back up{when}"
+        if self.kind == "triple_skull":
+            actor = f"{self.player_name} ({self.team_name})" if self.player_name else self.team_name
+            return f"{actor} rolled three skulls on the block{when} - the kind of roll that ends turns and reputations"
+        if self.kind == "double_skull":
+            actor = f"{self.player_name} ({self.team_name})" if self.player_name else self.team_name
+            extra = " (part of a snake-eyes streak)" if "snake_eyes_streak" in self.tags else ""
+            return f"{actor} double-skulled the block{when} ({self.detail or 'two ones'}){extra}"
+        if self.kind == "clutch_fail":
+            actor = f"{self.player_name} ({self.team_name})" if self.player_name else f"a {self.team_name} player"
+            cost = " - and the chance went with it" if "no_win" in self.tags else ""
+            return f"{actor} fumbled the pickup near the endzone in the dying turns{when}{cost}"
         # casualty
         sev = {"rip": "killed", "si": "seriously injured", "bh": "knocked out"}.get(
             self.detail.lower(), self.detail
@@ -109,6 +135,17 @@ class PivotalPlay:
         if self.half:
             parts.append(f"half {self.half}")
         return " (" + ", ".join(parts) + ")" if parts else ""
+
+
+def _self_kill_phrase(reason: str | None) -> str:
+    return {
+        "dropGfi": "tripped over their own feet on a Go For It",
+        "dropDodge": "blew the dodge",
+        "dropPickup": "dropped trying to grab the ball",
+        "dropConcentration": "lost concentration",
+        "fall": "lost their footing",
+        "drown": "tumbled off the pitch",
+    }.get(reason or "", "fell on their own")
 
 
 @dataclass
@@ -313,7 +350,52 @@ def _pivotal_from_events(
                 reason=e.reason,
                 tags=tags,
             ))
+        elif e.kind in ("self_kill", "triple_skull", "double_skull", "clutch_fail"):
+            out.append(_blunder_play(e, team, opp, resolve_name))
+
+    # Post-pass: tag double-skull events when a side hit the streak threshold,
+    # and tag clutch-fails as costlier when the team failed to win.
+    skull_count: dict[str, int] = {"home": 0, "away": 0}
+    for p in out:
+        if p.kind == "double_skull":
+            skull_count[_side_of(p, home)] += 1
+    for p in out:
+        if p.kind == "double_skull" and skull_count[_side_of(p, home)] >= _DOUBLE_SKULL_STREAK_THRESHOLD:
+            p.tags.append("snake_eyes_streak")
+            p.weight += 0.2
+        if p.kind == "clutch_fail":
+            side = _side_of(p, home)
+            won = (side == "home" and home.score > away.score) or (side == "away" and away.score > home.score)
+            if not won:
+                p.tags.append("no_win")
+                p.weight += _CLUTCH_MOD_NO_WIN
     return out
+
+
+def _side_of(p: PivotalPlay, home: TeamInfo) -> str:
+    return "home" if p.team_id == home.id else "away"
+
+
+def _blunder_play(e: Event, team: TeamInfo, opp: TeamInfo, resolve_name) -> PivotalPlay:
+    base = {
+        "self_kill": _BASE_SELF_KILL_WEIGHT,
+        "triple_skull": _BASE_TRIPLE_SKULL_WEIGHT,
+        "double_skull": _BASE_DOUBLE_SKULL_WEIGHT,
+        "clutch_fail": _BASE_CLUTCH_FAIL_WEIGHT,
+    }[e.kind]
+    return PivotalPlay(
+        kind=e.kind, detail=e.detail or "",
+        team_id=team.id, team_name=team.name, against_team=opp.name,
+        weight=base,
+        half=e.half or None, turn=e.turn or None,
+        command_nr=e.command_nr,
+        score_home=e.score_home, score_away=e.score_away,
+        player_id=e.player_id,
+        player_name=resolve_name(team, e.player_id),
+        injury_label=e.detail if e.kind == "self_kill" else None,
+        reason=e.reason,
+        tags=[],
+    )
 
 
 def _td_modifier(tags: list[str]) -> float:
@@ -393,7 +475,8 @@ def _td(team: TeamInfo, opp: TeamInfo) -> PivotalPlay:
     )
 
 
-def format_report(a: MatchAnalysis) -> str:
+def format_report(a: MatchAnalysis, *, commentary: dict[int, str] | None = None) -> str:
+    commentary = commentary or {}
     lines = [
         "",
         "  " + a.summary_line(),
@@ -420,5 +503,7 @@ def format_report(a: MatchAnalysis) -> str:
         lines.append("    (no scoring or casualties recorded)")
     for i, p in enumerate(a.pivotal, 1):
         lines.append(f"    {i:2d}. [{p.weight:.2f}] {p.headline()}")
+        if i in commentary:
+            lines.append(f"        “{commentary[i]}”")
     lines.append("")
     return "\n".join(lines)

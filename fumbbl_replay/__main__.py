@@ -27,7 +27,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import analyzer, events, field_state, fumbbl_api, jnlp_loader
+from . import analyzer, events, field_state, fumbbl_api, jnlp_loader, sprites
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,6 +44,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="Render a PNG tableau per pivotal play into this directory")
     parser.add_argument("--gifs", type=Path, default=None,
                         help="Render an animated GIF per pivotal play into this directory")
+    parser.add_argument("--no-sprites", action="store_true",
+                        help="Skip the FUMBBL position sprite fetch; render plain coloured tokens")
+    parser.add_argument("--orientation", choices=("vertical", "horizontal"), default="vertical",
+                        help="Pitch orientation in tableaux/GIFs (default: vertical)")
+    parser.add_argument("--commentary", action="store_true",
+                        help="Generate one whimsical commentary line per pivotal play (calls Claude API; needs ANTHROPIC_API_KEY)")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -53,22 +59,40 @@ def main(argv: list[str] | None = None) -> int:
     )
     log = logging.getLogger("fumbbl_replay")
 
-    match_id = jnlp_loader.resolve(args.replay_ref)
-    log.info("resolved replay ref to match id %d", match_id)
+    ref = jnlp_loader.resolve(args.replay_ref)
+    log.info("resolved %s -> match_id=%s replay_id=%s",
+             args.replay_ref, ref.match_id, ref.replay_id)
 
-    summary = fumbbl_api.fetch_match_summary(match_id)
+    # Resolution paths:
+    #   match_id only  -> fetch summary, derive replay_id from it
+    #   replay_id only -> fetch replay, synthesize summary from it
+    #   both           -> use both directly
+    summary: dict | None = None
+    replay = None
+    replay_id = ref.replay_id
+
+    if ref.match_id is not None:
+        summary = fumbbl_api.fetch_match_summary(ref.match_id)
+        if replay_id is None:
+            replay_id = fumbbl_api.resolve_replay_id(ref.match_id, summary)
+
+    if not args.no_replay and replay_id is not None:
+        replay = fumbbl_api.fetch_replay(replay_id)
+
+    if summary is None:
+        if replay is None:
+            raise SystemExit("can't proceed: only a replay id was provided AND --no-replay was set")
+        summary = fumbbl_api.synthesize_summary_from_replay(replay)
+        log.info("synthesized summary from replay (no match id available)")
 
     team_home = team_away = None
-    if not args.no_rosters:
+    if not args.no_rosters and summary["team1"]["id"] and summary["team2"]["id"]:
         team_home = fumbbl_api.fetch_team(int(summary["team1"]["id"]))
         team_away = fumbbl_api.fetch_team(int(summary["team2"]["id"]))
 
     event_list = None
     player_lookup = None
-    replay = None
-    if not args.no_replay:
-        replay_id = fumbbl_api.resolve_replay_id(match_id, summary)
-        replay = fumbbl_api.fetch_replay(replay_id)
+    if replay is not None:
         event_list = events.extract_events(replay)
         player_lookup = events.roster_from_replay(replay)
         log.info("extracted %d events from replay %d (%d in-game players)",
@@ -84,14 +108,43 @@ def main(argv: list[str] | None = None) -> int:
         events=event_list, player_lookup=player_lookup,
     )
 
+    commentary_lines: dict[int, str] = {}
+    if args.commentary:
+        from . import commentary
+        try:
+            commentary_lines = commentary.generate_commentary(analysis)
+            log.info("got commentary for %d/%d plays", len(commentary_lines), len(analysis.pivotal))
+        except Exception as e:
+            log.warning("commentary generation failed: %s", e)
+
     if args.json:
-        print(json.dumps(dataclasses.asdict(analysis), indent=2))
+        out = dataclasses.asdict(analysis)
+        if commentary_lines:
+            out["commentary"] = {str(k): v for k, v in commentary_lines.items()}
+        print(json.dumps(out, indent=2))
     else:
-        print(analyzer.format_report(analysis))
+        print(analyzer.format_report(analysis, commentary=commentary_lines))
 
     if (args.tableaux or args.gifs) and replay is None:
         log.warning("--tableaux/--gifs require the replay event log; skipping (--no-replay was set)")
         return 0
+
+    player_sprites: dict = {}
+    if (args.tableaux or args.gifs) and not args.no_sprites and player_lookup:
+        idx = sprites.position_icon_index_from_replay(replay)
+        player_sprites = sprites.build_player_sprites(player_lookup, idx)
+        log.info("loaded sprites for %d/%d players", len(player_sprites), len(player_lookup))
+
+    # Team labels + logos for the endzones / pitch watermark.
+    home_name = analysis.home.name
+    away_name = analysis.away.name
+    home_logo_img = None
+    away_logo_img = None
+    if args.tableaux or args.gifs:
+        home_logo_id = _logo_id_from_team(team_home) or _logo_id_from_replay_team(replay, "home")
+        away_logo_id = _logo_id_from_team(team_away) or _logo_id_from_replay_team(replay, "away")
+        home_logo_img = sprites.fetch_team_logo(home_logo_id)
+        away_logo_img = sprites.fetch_team_logo(away_logo_id)
 
     if args.tableaux:
         from . import tableau  # local import: pillow only loaded when needed
@@ -114,7 +167,13 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 state = field_state.reconstruct_at(replay, p.command_nr)
             out = args.tableaux / f"{i:02d}_{p.kind}_{p.command_nr}.png"
-            tableau.render_tableau(p, state, player_lookup or {}, out)
+            tableau.render_tableau(
+                p, state, player_lookup or {}, out,
+                sprites=player_sprites,
+                orientation=args.orientation,
+                home_name=home_name, away_name=away_name,
+                home_logo=home_logo_img, away_logo=away_logo_img,
+            )
             n += 1
         log.info("rendered %d tableaux to %s", n, args.tableaux)
 
@@ -125,9 +184,34 @@ def main(argv: list[str] | None = None) -> int:
             if p.command_nr is None:
                 continue
             out = args.gifs / f"{i:02d}_{p.kind}_{p.command_nr}.gif"
-            animate.render_play_gif(replay, p, player_lookup or {}, out)
+            animate.render_play_gif(
+                replay, p, player_lookup or {}, out,
+                sprites=player_sprites,
+                orientation=args.orientation,
+                home_name=home_name, away_name=away_name,
+                home_logo=home_logo_img, away_logo=away_logo_img,
+            )
             n += 1
         log.info("rendered %d gifs to %s", n, args.gifs)
+
+
+def _logo_id_from_team(team: dict | None) -> int | None:
+    if not team:
+        return None
+    bio = team.get("bio") or {}
+    return bio.get("image")
+
+
+def _logo_id_from_replay_team(replay: dict, side: str) -> int | None:
+    """Fallback: pull the logo image id out of `logoUrl` in the replay's roster."""
+    team = (replay.get("game") or {}).get(f"team{side.capitalize()}") or {}
+    url = team.get("logoUrl")
+    if not url:
+        return None
+    # logoUrl is typically "i/12345"; the trailing integer is the image id.
+    import re
+    m = re.search(r"(\d+)", url)
+    return int(m.group(1)) if m else None
 
     return 0
 
