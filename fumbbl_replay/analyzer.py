@@ -6,16 +6,20 @@ mattered most.
 
 A pivotal play is one of:
 
-  * a touchdown   - scoring is by definition impactful
-  * an injury     - BH (KO; lingering drive-level impact),
-                    SI (out of game, roster-level impact),
-                    RIP (dead, hardest possible swing)
+  * a touchdown
+  * an interception
+  * an injury (BH / SI / RIP)
 
-Weights:  TD 1.0  RIP 0.8  SI 0.5  BH 0.2.
+Base weights:  TD 1.0  RIP 0.8  INT 0.7  SI 0.5  BH 0.2.
 
-When events from the replay log are supplied the report names the
-scoring/injured player, the half, and the turn. Without events we
-fall back to summary totals only.
+When events from the replay log are supplied we apply context
+modifiers - a tying TD scored late in the second half outscores a
+runaway-game TD; a foul-induced kill outscores a routine block-cas;
+a crowd-push casualty rates lower than a thumping block. Tags
+explaining each modifier are exposed on the PivotalPlay so downstream
+code (commentary, video) can lean on them.
+
+Without events we fall back to summary totals only.
 """
 
 from __future__ import annotations
@@ -27,42 +31,77 @@ from .events import Event, PlayerInfo
 from .fumbbl_api import image_url
 
 
-_CASUALTY_WEIGHT = {"rip": 0.8, "si": 0.5, "bh": 0.2}
-_TD_WEIGHT = 1.0
+_BASE_CASUALTY_WEIGHT = {"rip": 0.8, "si": 0.5, "bh": 0.2}
+_BASE_TD_WEIGHT = 1.0
+_BASE_INT_WEIGHT = 0.7
+
+# TD context modifiers (additive, capped at +1.0 total)
+_TD_MOD_GAME_WINNING = 0.6
+_TD_MOD_TYING = 0.4
+_TD_MOD_COMEBACK = 0.3
+_TD_MOD_LATE = 0.1
+_TD_MOD_CAP = 1.0
+
+# Casualty context modifiers
+_CAS_MOD_FOUL = 0.2
+_CAS_MOD_CROWD = -0.1
 
 
 @dataclass
 class PivotalPlay:
-    kind: str          # "touchdown" | "casualty"
-    detail: str        # "RIP" / "SI" / "BH" for casualties; "" for TDs
+    kind: str          # "touchdown" | "casualty" | "interception"
+    detail: str        # "RIP" / "SI" / "BH" for casualties; "" otherwise
     team_id: int
     team_name: str
     against_team: str
     weight: float
     half: int | None = None
     turn: int | None = None
+    score_home: int | None = None
+    score_away: int | None = None
     player_id: str | None = None
     player_name: str | None = None
+    inflicter_id: str | None = None
+    inflicter_name: str | None = None
+    inflicter_team: str | None = None
     injury_label: str | None = None
+    reason: str | None = None        # casualty: "blocked" / "fouled" / "crowdPushed"
+    tags: list[str] = field(default_factory=list)
 
     def headline(self) -> str:
-        actor = self.player_name or "a player"
         when = self._when_phrase()
         if self.kind == "touchdown":
-            if self.player_name:
-                return f"{self.player_name} ({self.team_name}) scored a touchdown{when}"
-            return f"{self.team_name} scored a touchdown{when}"
+            verb = self._td_verb()
+            scorer = f"{self.player_name} ({self.team_name})" if self.player_name else self.team_name
+            return f"{scorer} {verb}{when}"
+        if self.kind == "interception":
+            actor = f"{self.player_name} ({self.team_name})" if self.player_name else self.team_name
+            return f"{actor} intercepted a pass{when}"
+        # casualty
         sev = {"rip": "killed", "si": "seriously injured", "bh": "knocked out"}.get(
             self.detail.lower(), self.detail
         )
+        if self.reason == "crowdPushed":
+            sev = "shoved off the pitch (crowd push)" if self.detail.lower() == "bh" else f"{sev} after being shoved off the pitch"
+        elif self.reason == "fouled":
+            sev = f"{sev} by a foul"
+        by = ""
+        if self.inflicter_name and self.reason != "crowdPushed":
+            by = f" by {self.inflicter_name}" + (f" ({self.inflicter_team})" if self.inflicter_team else "")
+        victim = f"{self.player_name} ({self.team_name})" if self.player_name else f"a {self.team_name} player"
         label = f" - {self.injury_label}" if self.injury_label and self.detail.lower() != "rip" else ""
-        if self.player_name:
-            return f"{self.player_name} ({self.team_name}) was {sev}{when}{label}"
-        return f"{self.team_name} had {actor} {sev}{when}{label}"
+        return f"{victim} was {sev}{by}{when}{label}"
+
+    def _td_verb(self) -> str:
+        if "game_winning" in self.tags:
+            return "scored the game-winning touchdown"
+        if "tying" in self.tags:
+            return "scored a tying touchdown"
+        if "comeback" in self.tags:
+            return "scored a comeback touchdown"
+        return "scored a touchdown"
 
     def _when_phrase(self) -> str:
-        if not self.half and not self.turn:
-            return ""
         parts = []
         if self.turn:
             parts.append(f"turn {self.turn}")
@@ -172,34 +211,118 @@ def _pivotal_from_events(
         info = player_lookup.get(str(player_id))
         if info and info.name:
             return info.name
-        # Fall back to the persistent roster (rare; replay roster nearly always wins).
         return team.player_name(player_id)
+
+    def resolve_inflicter(player_id: str | None) -> tuple[str | None, str | None]:
+        if not player_id:
+            return None, None
+        info = player_lookup.get(str(player_id))
+        if info:
+            team_name = home.name if info.side == "home" else away.name
+            return info.name, team_name
+        return None, None
+
+    # The game-winning TD is the eventual winner's earliest TD that pushed
+    # them past the loser's *final* score (e.g. in a 1-2 game, the away TD
+    # that made it 1-2 is game-winning; the away TD that only tied 1-1 is
+    # not - that's a comeback or tying tag).
+    final_winner_side: str | None = None
+    final_loser_score = 0
+    if home.score > away.score:
+        final_winner_side, final_loser_score = "home", away.score
+    elif away.score > home.score:
+        final_winner_side, final_loser_score = "away", home.score
+    game_winning_td: Event | None = None
+    if final_winner_side:
+        for e in events:
+            if e.kind != "touchdown" or e.side != final_winner_side:
+                continue
+            winner_post = e.score_home if final_winner_side == "home" else e.score_away
+            if winner_post > final_loser_score:
+                game_winning_td = e
+                break
 
     out: list[PivotalPlay] = []
     for e in events:
         team = home if e.side == "home" else away
         opp = away if e.side == "home" else home
         if e.kind == "touchdown":
+            tags: list[str] = []
+            # Pre-event score: subtract 1 from the scoring side.
+            pre_home = e.score_home - (1 if e.side == "home" else 0)
+            pre_away = e.score_away - (1 if e.side == "away" else 0)
+            scoring_pre = pre_home if e.side == "home" else pre_away
+            opp_pre = pre_away if e.side == "home" else pre_home
+            if e.score_home == e.score_away:
+                tags.append("tying")
+            if scoring_pre < opp_pre:
+                tags.append("comeback")
+            if e is game_winning_td:
+                tags.append("game_winning")
+            if e.half == 2 and e.turn and e.turn >= 5:
+                tags.append("late")
+            weight = _BASE_TD_WEIGHT + min(_TD_MOD_CAP, _td_modifier(tags))
             out.append(PivotalPlay(
                 kind="touchdown", detail="",
                 team_id=team.id, team_name=team.name, against_team=opp.name,
-                weight=_TD_WEIGHT,
+                weight=weight,
                 half=e.half or None, turn=e.turn or None,
+                score_home=e.score_home, score_away=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
+                tags=tags,
+            ))
+        elif e.kind == "interception":
+            out.append(PivotalPlay(
+                kind="interception", detail="",
+                team_id=team.id, team_name=team.name, against_team=opp.name,
+                weight=_BASE_INT_WEIGHT,
+                half=e.half or None, turn=e.turn or None,
+                score_home=e.score_home, score_away=e.score_away,
+                player_id=e.player_id,
+                player_name=resolve_name(team, e.player_id),
+                tags=[],
             ))
         elif e.kind in ("kill", "serious_injury", "badly_hurt"):
             sev = {"kill": "rip", "serious_injury": "si", "badly_hurt": "bh"}[e.kind]
+            tags = []
+            mod = 0.0
+            if e.reason == "fouled":
+                tags.append("foul")
+                mod += _CAS_MOD_FOUL
+            elif e.reason == "crowdPushed":
+                tags.append("crowd_push")
+                mod += _CAS_MOD_CROWD
+            inflicter_name, inflicter_team = resolve_inflicter(e.inflicter_id)
             out.append(PivotalPlay(
                 kind="casualty", detail=sev.upper(),
                 team_id=team.id, team_name=team.name, against_team=opp.name,
-                weight=_CASUALTY_WEIGHT[sev],
+                weight=max(0.0, _BASE_CASUALTY_WEIGHT[sev] + mod),
                 half=e.half or None, turn=e.turn or None,
+                score_home=e.score_home, score_away=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
+                inflicter_id=e.inflicter_id,
+                inflicter_name=inflicter_name,
+                inflicter_team=inflicter_team,
                 injury_label=e.detail,
+                reason=e.reason,
+                tags=tags,
             ))
     return out
+
+
+def _td_modifier(tags: list[str]) -> float:
+    m = 0.0
+    if "game_winning" in tags:
+        m += _TD_MOD_GAME_WINNING
+    if "tying" in tags:
+        m += _TD_MOD_TYING
+    if "comeback" in tags:
+        m += _TD_MOD_COMEBACK
+    if "late" in tags:
+        m += _TD_MOD_LATE
+    return m
 
 
 def _pivotal_from_summary(home: TeamInfo, away: TeamInfo) -> list[PivotalPlay]:
@@ -215,7 +338,7 @@ def _pivotal_from_summary(home: TeamInfo, away: TeamInfo) -> list[PivotalPlay]:
                     kind="casualty", detail=sev.upper(),
                     team_id=team.id, team_name=team.name,
                     against_team=opp.name,
-                    weight=_CASUALTY_WEIGHT[sev],
+                    weight=_BASE_CASUALTY_WEIGHT[sev],
                 ))
     return out
 
@@ -262,7 +385,7 @@ def _td(team: TeamInfo, opp: TeamInfo) -> PivotalPlay:
     return PivotalPlay(
         kind="touchdown", detail="",
         team_id=team.id, team_name=team.name, against_team=opp.name,
-        weight=_TD_WEIGHT,
+        weight=_BASE_TD_WEIGHT,
     )
 
 
