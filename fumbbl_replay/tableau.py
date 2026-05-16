@@ -52,7 +52,7 @@ _MARKER_WIDTH = 3
 # (numbers 1-12 down each side / along each edge).
 MARGIN_X = 30
 MARGIN_TOP = 50
-CAPTION_H = 70
+CAPTION_H = 92  # caption + dugout-status strip
 # Field colours.
 PITCH_GREEN = (40, 90, 50)
 PITCH_LINE = (200, 220, 200)
@@ -134,6 +134,7 @@ def render_tableau(
     away_logo: Image.Image | None = None,
     dice: list | None = None,
     pitch_background: Image.Image | None = None,
+    weather: str | None = None,
 ) -> Path:
     """Render one pivotal-play tableau.
 
@@ -167,16 +168,21 @@ def render_tableau(
     # Layer 3b: row coordinate labels along the long-axis sides of the pitch.
     _draw_coord_labels(img, lay, _font(11))
     # Layer 4: header bar above the pitch.
-    draw.text((lay.ox, 14), _header_text(play), fill=TEXT, font=font)
+    draw.text((lay.ox, 14), _header_text(play, weather=weather), fill=TEXT, font=font)
     # Layer 5: ball.
     _draw_ball(draw, lay, state)
     # Layer 6: players + their state markers + the highlight ring.
     _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
+    # Layer 6b: BLITZ badge above the actor for blitz-declared plays.
+    if play.was_blitz:
+        _draw_blitz_badge(img, draw, lay, state, targets, _font(11))
     # Layer 7: dice rolls that produced this play, positioned over the actor.
     if dice:
         _draw_dice(img, lay, state, dice, targets, tiny)
-    # Layer 8: caption strip.
+    # Layer 8: caption strip + dugout status.
     _draw_caption(draw, lay, play, state, font, small)
+    _draw_dugout_strip(draw, lay, state, player_lookup,
+                        home_name=home_name, away_name=away_name, font=small)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.convert("RGB").save(out_path)
@@ -277,6 +283,32 @@ def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
     img.alpha_composite(overlay, (cx - r, cy - r))
 
 
+def _draw_blitz_badge(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
+                       state: FieldState, targets: "TableauTargets", font) -> None:
+    """Stamp a small bright BLITZ chip next to the acting (inflicter)
+    player so the viewer knows the casualty came from a blitz move."""
+    anchor_pid = targets.inflicter or targets.scorer
+    if not anchor_pid:
+        return
+    anchor_pos = state.players.get(anchor_pid)
+    if not anchor_pos:
+        return
+    ax, ay = anchor_pos
+    if not (0 <= ax < PITCH_WIDTH and 0 <= ay < PITCH_HEIGHT):
+        return
+    cx, cy = lay.bb_to_screen(ax, ay)
+    label = "BLITZ"
+    tw, th = _text_size(draw, label, font)
+    pad_x, pad_y = 4, 2
+    chip_w, chip_h = tw + 2 * pad_x, th + 2 * pad_y
+    # Slot the chip just below the player token (dice strip is above).
+    x = cx - chip_w // 2
+    y = cy + TILE // 2 + 2
+    chip = Image.new("RGBA", (chip_w, chip_h), HIGHLIGHT + (245,))
+    img.alpha_composite(chip, (x, y))
+    draw.text((x + pad_x, y + pad_y - 1), label, fill=(24, 24, 24), font=font)
+
+
 def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,
                 dice: list, targets: "TableauTargets", font) -> None:
     """Stamp dice icons above the actor for each DiceGroup. Multiple
@@ -316,6 +348,33 @@ def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,
             sx = max(lay.ox + 2, min(sx, lay.ox + lay.pitch_w - sw - 2))
             img.alpha_composite(strip, (sx, y))
             y += sh + gap
+
+
+def _draw_dugout_strip(
+    draw: ImageDraw.ImageDraw,
+    lay: Layout,
+    state: FieldState,
+    player_lookup: dict[str, PlayerInfo],
+    *,
+    home_name: str | None,
+    away_name: str | None,
+    font,
+) -> None:
+    """Show each team's off-pitch player counts at the bottom of the
+    canvas: reserves / KO / BH / SI / RIP / banned. A glimpse of the
+    state of the match."""
+    counts = state.dugout_counts(player_lookup)
+    abbrev = lambda n: (n[:14] + "…") if n and len(n) > 15 else (n or "")
+    line_h = 12
+    # Caption strip uses the first ~36 px; we get the rest of CAPTION_H.
+    y = lay.oy + lay.pitch_h + (8 if lay.orientation == "vertical" else _COORD_BAND + 8) + 36
+    cats = ("res", "ko", "bh", "si", "rip", "ban")
+    for side, color, name in (("home", HOME_COLOR, abbrev(home_name)),
+                                ("away", AWAY_COLOR, abbrev(away_name))):
+        bits = "  ".join(f"{k.upper()} {counts[side][k]}" for k in cats)
+        label = f"{name or side.upper():<14}  {bits}"
+        draw.text((lay.ox, y), label, fill=color, font=font)
+        y += line_h
 
 
 def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> None:
@@ -534,7 +593,7 @@ def _paste_centered_logo(canvas: Image.Image, logo: Image.Image,
     canvas.paste(logo_resized, (cx - new_size[0] // 2, cy - new_size[1] // 2), logo_resized)
 
 
-def _header_text(p: PivotalPlay) -> str:
+def _header_text(p: PivotalPlay, *, weather: str | None = None) -> str:
     bits = [p.team_name, "vs", p.against_team]
     if p.score_home is not None and p.score_away is not None:
         bits.append(f"  {p.score_home}-{p.score_away}")
@@ -542,6 +601,8 @@ def _header_text(p: PivotalPlay) -> str:
         bits.append(f"  half {p.half}")
     if p.turn:
         bits.append(f"  turn {p.turn}")
+    if weather:
+        bits.append(f"  •  {weather}")
     return " ".join(bits)
 
 

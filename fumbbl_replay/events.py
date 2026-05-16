@@ -72,6 +72,7 @@ class Event:
     detail: str | None = None          # injury label, blockRoll string, "x,y" for clutch_fail, etc.
     reason: str | None = None          # for casualties: "blocked" / "fouled" / "crowdPushed";
                                        # for self_kill: the originating injuryType (dropGfi / dropDodge / ...)
+    was_blitz: bool = False            # True when the action this turn was declared as a Blitz
 
 
 def extract_events(replay: dict[str, Any]) -> list[Event]:
@@ -85,6 +86,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
     home_playing: bool | None = None  # whose turn (True = home, False = away)
     acting_player_id: str | None = None
     ball_xy: tuple[int, int] | None = None
+    current_action: str | None = None  # sticky: "Blitz" / "Block" / "Move" / "Foul" / etc.
     events: list[Event] = []
 
     for c in cmds:
@@ -113,6 +115,12 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                 home_playing = bool(v) if v is not None else home_playing
             elif mid == "actingPlayerSetPlayerId":
                 acting_player_id = str(v) if v else None
+                # New acting player: reset the action; it'll be set if
+                # the next command declares a Blitz / Foul / etc.
+                if v:
+                    current_action = None
+            elif mid == "actingPlayerSetPlayerAction" and v:
+                current_action = str(v)
             elif mid == "fieldModelSetBallCoordinate":
                 ball_xy = (int(v[0]), int(v[1])) if isinstance(v, list) and len(v) == 2 else None
 
@@ -167,6 +175,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                     player_id=victim, detail=injury_label,
                     inflicter_id=meta.get("by"),
                     reason=meta.get("reason"),
+                    was_blitz=(current_action or "").lower() in ("blitz", "blitzmove"),
                 ))
             elif mid == "teamResultSetSeriousInjurySuffered" and side in ("home", "away"):
                 if injury_label and "RIP" in injury_label.upper():
@@ -179,9 +188,9 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                     player_id=victim, detail=injury_label,
                     inflicter_id=meta.get("by"),
                     reason=meta.get("reason"),
+                    was_blitz=(current_action or "").lower() in ("blitz", "blitzmove"),
                 ))
             elif mid == "teamResultSetBadlyHurtSuffered" and side in ("home", "away"):
-                # BH victim is the key of the SendToBoxReason record where the inflicter is on the OPPOSING side.
                 bh_victim = _bh_victim(send_box, victim_excluded=victim)
                 meta = send_box.get(bh_victim or "", {}) if bh_victim else {}
                 events.append(Event(
@@ -191,6 +200,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                     player_id=bh_victim,
                     inflicter_id=meta.get("by"),
                     reason=meta.get("reason"),
+                    was_blitz=(current_action or "").lower() in ("blitz", "blitzmove"),
                 ))
         # Interception: emit when interceptor seen in this command.
         # The thrower's team loses the ball; the interceptor's side gets the event.
@@ -224,6 +234,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                         score_home=score_home, score_away=score_away,
                         player_id=acting_player_id,
                         detail=",".join(str(v) for v in roll),
+                        was_blitz=(current_action or "").lower() in ("blitz", "blitzmove"),
                     ))
                 elif ones >= 2:
                     # Mixed roll with 2+ skulls (e.g. [1, 1, 4]) — still a blunder
@@ -233,6 +244,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                         score_home=score_home, score_away=score_away,
                         player_id=acting_player_id,
                         detail=",".join(str(v) for v in roll),
+                        was_blitz=(current_action or "").lower() in ("blitz", "blitzmove"),
                     ))
             elif rid == "injury":
                 # Self-kill: armour-broken-then-cas death triggered by the

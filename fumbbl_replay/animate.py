@@ -47,6 +47,7 @@ def render_play_gif(
     home_logo: Image.Image | None = None,
     away_logo: Image.Image | None = None,
     pitch_background: Image.Image | None = None,
+    weather: str | None = None,
     lookback_cmds: int = 60,
     frame_ms: int = 200,
     final_pause_ms: int = 1500,
@@ -139,6 +140,7 @@ def render_play_gif(
             home_logo=home_logo, away_logo=away_logo,
             dice=dice_to_show or None,
             pitch_background=pitch_background,
+            weather=weather,
         )
         f = Image.open(img_path).convert("P", palette=Image.ADAPTIVE)
         img_path.unlink()

@@ -246,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     home_logo_img = None
     away_logo_img = None
     pitch_bg = None
+    weather: str | None = None
     if args.tableaux or args.gifs:
         home_logo_id = _logo_id_from_team(team_home) or _logo_id_from_replay_team(replay, "home")
         away_logo_id = _logo_id_from_team(team_away) or _logo_id_from_replay_team(replay, "away")
@@ -253,8 +254,8 @@ def main(argv: list[str] | None = None) -> int:
         away_logo_img = sprites.fetch_team_logo(away_logo_id)
         # Pitch background. Auto = use replay weather; otherwise force.
         from . import pitches
+        weather = pitches.weather_from_replay(replay)
         if args.pitch == "auto":
-            weather = pitches.weather_from_replay(replay)
             pitch_bg = pitches.fetch_pitch(weather)
             if pitch_bg is not None:
                 log.info("loaded pitch background for weather %r", weather)
@@ -303,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
                 home_logo=home_logo_img, away_logo=away_logo_img,
                 dice=dice_for_play,
                 pitch_background=pitch_bg,
+                weather=weather,
             )
             n += 1
         log.info("rendered %d tableaux to %s", n, args.tableaux)
@@ -321,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
                 home_name=home_name, away_name=away_name,
                 home_logo=home_logo_img, away_logo=away_logo_img,
                 pitch_background=pitch_bg,
+                weather=weather,
             )
             n += 1
         log.info("rendered %d gifs to %s", n, args.gifs)

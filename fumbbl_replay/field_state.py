@@ -35,6 +35,35 @@ class FieldState:
     def off_pitch(self) -> dict[str, tuple[int, int]]:
         return {pid: (x, y) for pid, (x, y) in self.players.items() if not (0 <= x < PITCH_WIDTH and 0 <= y < PITCH_HEIGHT)}
 
+    def dugout_counts(self, player_lookup) -> dict[str, dict[str, int]]:
+        """Return {'home': {res, ko, bh, si, rip, ban}, 'away': {...}}.
+
+        Buckets by the player-state low byte:
+          5 = KO  ('ko')
+          6 = BH  ('bh')
+          7 = SI  ('si')
+          8 = RIP ('rip')
+          9 = RESERVE ('res')
+         13 = BANNED  ('ban')
+        Anything else (standing / moving / prone / stunned / etc.) is
+        counted as on-pitch active and isn't bucketed here. Player ids
+        the lookup doesn't know about are skipped.
+        """
+        cats = {5: "ko", 6: "bh", 7: "si", 8: "rip", 9: "res", 13: "ban"}
+        out = {
+            "home": {k: 0 for k in ("res", "ko", "bh", "si", "rip", "ban")},
+            "away": {k: 0 for k in ("res", "ko", "bh", "si", "rip", "ban")},
+        }
+        for pid, raw_state in self.player_states.items():
+            info = player_lookup.get(pid)
+            if info is None:
+                continue
+            base = raw_state & 0xFF
+            cat = cats.get(base)
+            if cat:
+                out[info.side][cat] += 1
+        return out
+
 
 def reconstruct_at(
     replay: dict[str, Any],
