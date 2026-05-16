@@ -78,8 +78,14 @@ python -m fumbbl_replay 4700842 --tableaux out/tableaux
 # Render an animated GIF of each pivotal play's run-up
 python -m fumbbl_replay 4700842 --gifs out/gifs
 
-# Add LLM-written commentary lines per pivotal play (calls Claude API; needs ANTHROPIC_API_KEY)
+# Add LLM-written commentary lines per pivotal play (default: local Ollama at :11434)
 python -m fumbbl_replay 4700842 --commentary
+python -m fumbbl_replay 4700842 --commentary --commentary-backend claude  # or openai
+
+# Synthesise commentary into per-play audio clips (default: macOS `say`)
+python -m fumbbl_replay 4700842 --tts out/audio
+python -m fumbbl_replay 4700842 --tts out/audio --tts-voice "Reed"
+python -m fumbbl_replay 4700842 --tts out/audio --tts-backend openai --tts-voice nova
 
 # Skip the FUMBBL position sprite fetch (use plain coloured tokens instead)
 python -m fumbbl_replay 4700842 --tableaux out/tableaux --no-sprites
@@ -105,7 +111,10 @@ fumbbl_replay/
   tableau.py      - render a single pivotal play to PNG (uses sprites when available)
   animate.py      - render an animated GIF of a play's run-up
   sprites.py      - fetch + crop FUMBBL position icon sheets per player (cached on disk)
-  commentary.py   - generate one whimsical commentary line per pivotal play (Claude API)
+  commentary.py   - generate one whimsical commentary line per pivotal play (Ollama / Claude / OpenAI)
+  dice.py         - extract + render block / armor / injury dice; fetches FFB's PNGs
+  pitches.py     - weather-themed pitch backgrounds from FFB's Default pitch set
+  tts.py          - synthesise commentary lines to audio (macOS say / pyttsx3 / OpenAI)
 scripts/
   build_overview.py - regenerate docs/overview.html
 ```

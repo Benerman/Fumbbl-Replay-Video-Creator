@@ -57,6 +57,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="Model name for the chosen backend (default per backend; env: FUMBBL_COMMENTARY_MODEL)")
     parser.add_argument("--commentary-base-url", default=None,
                         help="Override base URL for ollama/openai backends (e.g. http://localhost:11434)")
+    parser.add_argument("--tts", type=Path, default=None,
+                        help="Generate per-play TTS audio into this directory (forces --commentary)")
+    parser.add_argument("--tts-backend", choices=("say", "pyttsx3", "openai"), default=None,
+                        help="TTS backend (default: say on macOS; env: FUMBBL_TTS_BACKEND)")
+    parser.add_argument("--tts-voice", default=None,
+                        help="Voice name for the chosen TTS backend (default per backend; env: FUMBBL_TTS_VOICE)")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -116,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     commentary_lines: dict[int, str] = {}
-    if args.commentary:
+    if args.commentary or args.tts:
         from . import commentary
         try:
             commentary_lines = commentary.generate_commentary(
@@ -128,6 +134,20 @@ def main(argv: list[str] | None = None) -> int:
             log.info("got commentary for %d/%d plays", len(commentary_lines), len(analysis.pivotal))
         except Exception as e:
             log.warning("commentary generation failed: %s", e)
+
+    if args.tts:
+        from . import tts
+        kinds = {i: p.kind for i, p in enumerate(analysis.pivotal, 1)}
+        try:
+            audio_paths = tts.generate_audio(
+                commentary_lines, args.tts,
+                pivotal_kinds=kinds,
+                backend=args.tts_backend,
+                voice=args.tts_voice,
+            )
+            log.info("rendered %d audio clips to %s", len(audio_paths), args.tts)
+        except Exception as e:
+            log.warning("TTS generation failed: %s", e)
 
     if args.json:
         out = dataclasses.asdict(analysis)
