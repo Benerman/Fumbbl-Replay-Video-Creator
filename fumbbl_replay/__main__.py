@@ -57,22 +57,40 @@ def main(argv: list[str] | None = None) -> int:
     )
     log = logging.getLogger("fumbbl_replay")
 
-    match_id = jnlp_loader.resolve(args.replay_ref)
-    log.info("resolved replay ref to match id %d", match_id)
+    ref = jnlp_loader.resolve(args.replay_ref)
+    log.info("resolved %s -> match_id=%s replay_id=%s",
+             args.replay_ref, ref.match_id, ref.replay_id)
 
-    summary = fumbbl_api.fetch_match_summary(match_id)
+    # Resolution paths:
+    #   match_id only  -> fetch summary, derive replay_id from it
+    #   replay_id only -> fetch replay, synthesize summary from it
+    #   both           -> use both directly
+    summary: dict | None = None
+    replay = None
+    replay_id = ref.replay_id
+
+    if ref.match_id is not None:
+        summary = fumbbl_api.fetch_match_summary(ref.match_id)
+        if replay_id is None:
+            replay_id = fumbbl_api.resolve_replay_id(ref.match_id, summary)
+
+    if not args.no_replay and replay_id is not None:
+        replay = fumbbl_api.fetch_replay(replay_id)
+
+    if summary is None:
+        if replay is None:
+            raise SystemExit("can't proceed: only a replay id was provided AND --no-replay was set")
+        summary = fumbbl_api.synthesize_summary_from_replay(replay)
+        log.info("synthesized summary from replay (no match id available)")
 
     team_home = team_away = None
-    if not args.no_rosters:
+    if not args.no_rosters and summary["team1"]["id"] and summary["team2"]["id"]:
         team_home = fumbbl_api.fetch_team(int(summary["team1"]["id"]))
         team_away = fumbbl_api.fetch_team(int(summary["team2"]["id"]))
 
     event_list = None
     player_lookup = None
-    replay = None
-    if not args.no_replay:
-        replay_id = fumbbl_api.resolve_replay_id(match_id, summary)
-        replay = fumbbl_api.fetch_replay(replay_id)
+    if replay is not None:
         event_list = events.extract_events(replay)
         player_lookup = events.roster_from_replay(replay)
         log.info("extracted %d events from replay %d (%d in-game players)",

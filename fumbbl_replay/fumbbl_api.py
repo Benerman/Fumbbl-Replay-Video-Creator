@@ -68,6 +68,44 @@ def resolve_replay_id(match_id: int, summary: dict[str, Any] | None = None) -> i
     return rid or match_id
 
 
+def synthesize_summary_from_replay(replay: dict[str, Any]) -> dict[str, Any]:
+    """Build a `/api/match/get`-shaped dict from a replay's own game state.
+
+    Used when we have only a replay id (e.g. the user passed an FFB
+    JNLP URL) and FUMBBL exposes no reverse lookup. The replay carries
+    the canonical scores, casualty totals, team metadata, and rosters
+    in `game.gameResult` / `game.teamHome` / `game.teamAway` - so we
+    can produce an analyzer-compatible summary without ever hitting
+    `/api/match/get`. `division` and the public match id aren't in
+    the replay; we leave them blank.
+    """
+    game = replay.get("game") or {}
+    result = game.get("gameResult") or {}
+    out: dict[str, Any] = {
+        "id": 0,
+        "replayId": int(game.get("gameId") or 0),
+        "date": (game.get("finished") or game.get("scheduled") or "").split("T")[0],
+        "division": "",
+    }
+    for label, side in (("team1", "Home"), ("team2", "Away")):
+        team = game.get(f"team{side}") or {}
+        team_result = result.get(f"teamResult{side}") or {}
+        out[label] = {
+            "id": int(team.get("teamId") or 0),
+            "name": team.get("teamName") or "Unknown",
+            "score": int(team_result.get("score") or 0),
+            "teamValue": int(team.get("teamValue") or 0),
+            "coach": {"name": team.get("coach") or "Unknown"},
+            "roster": {"name": team.get("race") or "Unknown"},
+            "casualties": {
+                "bh": int(team_result.get("badlyHurtSuffered") or 0),
+                "si": int(team_result.get("seriousInjurySuffered") or 0),
+                "rip": int(team_result.get("ripSuffered") or 0),
+            },
+        }
+    return out
+
+
 def image_url(image_id: int | None) -> str | None:
     """FUMBBL serves uploaded images (team logos, player portraits) at /i/{id}."""
     if not image_id:
