@@ -129,32 +129,48 @@ def fetch_sound(filename: str) -> Path | None:
     return cache_path
 
 
-def install_play_sounds(
-    plays: list[PivotalPlay],
-    output_dir: Path,
-) -> dict[int, list[Path]]:
-    """For each pivotal play, fetch its sounds (cached) and copy them
-    into `output_dir` with a sortable, descriptive name.
+def resolve_play_sounds(plays: list[PivotalPlay]) -> dict[int, list[Path]]:
+    """For each pivotal play return the cached on-disk paths for its
+    SFX. The files keep their FFB names (`td.ogg`, `specStomp.ogg`,
+    ...) and live in the shared cache root - one copy per filename,
+    referenced by every match that needs them. Downloads on first
+    use; subsequent runs serve from cache.
 
-    Returns {play_index -> [local Paths]} so downstream tooling (mix /
-    ffmpeg compose) can look up the SFX for any given play.
+    Returns {play_index -> [Paths]} pointing into the cache.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
     out: dict[int, list[Path]] = {}
     for i, play in enumerate(plays, 1):
         files = sounds_for_play(play, play_index=i)
         if not files:
             continue
+        paths = [p for p in (fetch_sound(f) for f in files) if p]
+        if paths:
+            out[i] = paths
+    return out
+
+
+def install_play_sounds(
+    plays: list[PivotalPlay],
+    output_dir: Path | None = None,
+) -> dict[int, list[Path]]:
+    """Optional helper: COPY the resolved SFX into a per-match
+    directory under their original FFB filenames (so a user who
+    wants a self-contained match output bundle can have one).
+    Without `output_dir` this is equivalent to resolve_play_sounds.
+    """
+    resolved = resolve_play_sounds(plays)
+    if output_dir is None:
+        return resolved
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out: dict[int, list[Path]] = {}
+    seen: set[str] = set()
+    for idx, paths in resolved.items():
         copied: list[Path] = []
-        for j, filename in enumerate(files):
-            src = fetch_sound(filename)
-            if src is None:
-                continue
-            # Use sortable per-play names; keep the original FFB suffix.
-            dest = output_dir / f"{i:02d}_{play.kind}_{j}_{filename}"
-            if dest != src:
+        for src in paths:
+            dest = output_dir / src.name
+            if src.name not in seen:
                 shutil.copyfile(src, dest)
+                seen.add(src.name)
             copied.append(dest)
-        if copied:
-            out[i] = copied
+        out[idx] = copied
     return out

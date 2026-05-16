@@ -126,11 +126,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # When --mix is requested we auto-derive intermediate output dirs
-    # for commentary/TTS/SFX next to the mix dir so the user doesn't
-    # have to wire up four flags by hand.
+    # for commentary/TTS next to the mix dir so the user doesn't have
+    # to wire up multiple flags by hand. SFX are served from the
+    # shared cache root by default - we only physically copy them
+    # into a per-match directory when --sounds DIR is set.
     want_commentary = bool(args.commentary or args.tts or args.mix)
     want_tts_dir = args.tts or (args.mix.parent / "audio" if args.mix else None)
-    want_sfx_dir = args.sounds or (args.mix.parent / "sfx" if args.mix else None)
     kinds = {i: p.kind for i, p in enumerate(analysis.pivotal, 1)}
 
     commentary_lines: dict[int, str] = {}
@@ -162,15 +163,20 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("TTS generation failed: %s", e)
 
     sfx_paths: dict[int, list[Path]] = {}
-    if want_sfx_dir:
+    if args.sounds or args.mix:
         from . import sounds as sounds_mod
         try:
-            sfx_paths = sounds_mod.install_play_sounds(analysis.pivotal, want_sfx_dir)
-            total = sum(len(v) for v in sfx_paths.values())
-            log.info("installed %d SFX files for %d plays into %s",
-                     total, len(sfx_paths), want_sfx_dir)
+            if args.sounds:
+                # User wants a self-contained per-match copy.
+                sfx_paths = sounds_mod.install_play_sounds(analysis.pivotal, args.sounds)
+                log.info("copied SFX for %d plays into %s (also cached at root)",
+                         len(sfx_paths), args.sounds)
+            else:
+                # Reference the shared cache directly.
+                sfx_paths = sounds_mod.resolve_play_sounds(analysis.pivotal)
+                log.info("resolved cached SFX for %d plays", len(sfx_paths))
         except Exception as e:
-            log.warning("SFX install failed: %s", e)
+            log.warning("SFX resolution failed: %s", e)
 
     if args.mix:
         from . import mix as mix_mod
