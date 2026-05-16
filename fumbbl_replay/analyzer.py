@@ -57,6 +57,7 @@ class PivotalPlay:
     weight: float
     half: int | None = None
     turn: int | None = None
+    command_nr: int | None = None    # gameLog command number, for field reconstruction
     score_home: int | None = None
     score_away: int | None = None
     player_id: str | None = None
@@ -267,6 +268,7 @@ def _pivotal_from_events(
                 team_id=team.id, team_name=team.name, against_team=opp.name,
                 weight=weight,
                 half=e.half or None, turn=e.turn or None,
+                command_nr=e.command_nr,
                 score_home=e.score_home, score_away=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
@@ -278,6 +280,7 @@ def _pivotal_from_events(
                 team_id=team.id, team_name=team.name, against_team=opp.name,
                 weight=_BASE_INT_WEIGHT,
                 half=e.half or None, turn=e.turn or None,
+                command_nr=e.command_nr,
                 score_home=e.score_home, score_away=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
@@ -299,6 +302,7 @@ def _pivotal_from_events(
                 team_id=team.id, team_name=team.name, against_team=opp.name,
                 weight=max(0.0, _BASE_CASUALTY_WEIGHT[sev] + mod),
                 half=e.half or None, turn=e.turn or None,
+                command_nr=e.command_nr,
                 score_home=e.score_home, score_away=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
