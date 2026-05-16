@@ -1,0 +1,156 @@
+"""Final stitched video: per-play GIFs + per-play mixed-audio MP3s -> MP4.
+
+For each pivotal play we already have:
+  - vertical/gifs/{NN_kind_cmd}.gif    (silent, ~3-7s of looping action)
+  - mixed/{NN_kind}.mp3                (SFX + voice A + voice B layered)
+
+`compose_highlight_reel` encodes one MP4 per play (gif looped to fill the
+audio duration), then concatenates them in pivotal order into a single
+match-highlight MP4.
+
+The intermediate per-play MP4s use a fixed codec/profile/timebase so the
+final concat step is a stream copy — fast and avoids quality loss from
+re-encoding.
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Iterable, Sequence
+
+log = logging.getLogger(__name__)
+
+# Encoding profile for the intermediates. The pad ensures even dimensions
+# (libx264 requires width/height divisible by 2) regardless of the GIF size.
+VIDEO_CODEC = "libx264"
+VIDEO_PRESET = "veryfast"
+VIDEO_CRF = "20"
+VIDEO_PIX_FMT = "yuv420p"
+AUDIO_CODEC = "aac"
+AUDIO_BITRATE = "192k"
+FPS = 24
+
+
+def _audio_duration_seconds(path: Path) -> float:
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+        return float(proc.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def _encode_play_clip(gif: Path, audio: Path, out: Path) -> bool:
+    """Encode one play: loop the GIF for the duration of the audio."""
+    dur = _audio_duration_seconds(audio)
+    if dur <= 0:
+        log.warning("could not read audio duration for %s; skipping", audio.name)
+        return False
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        # Loop the gif indefinitely; we trim with -t to the audio length.
+        "-stream_loop", "-1", "-i", str(gif),
+        "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-t", f"{dur:.3f}",
+        "-vf", f"fps={FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
+        "-pix_fmt", VIDEO_PIX_FMT,
+        "-c:a", AUDIO_CODEC, "-b:a", AUDIO_BITRATE,
+        "-movflags", "+faststart",
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        log.warning("ffmpeg encode failed for %s: %s", gif.name, e.stderr or e)
+        return False
+
+
+def _concat_clips(clips: Sequence[Path], out_path: Path) -> bool:
+    """Concat the per-play MP4s into one. Stream-copy where possible."""
+    if not clips:
+        return False
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        for c in clips:
+            # ffmpeg concat demuxer wants `file '/abs/path'` lines.
+            f.write(f"file '{c.resolve()}'\n")
+        listing = f.name
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", listing,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(out_path),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        # Codec-mismatch fallback: re-encode the concat.
+        log.warning("concat -c copy failed (%s); falling back to re-encode", e.stderr.splitlines()[-1] if e.stderr else e)
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", listing,
+            "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
+            "-pix_fmt", VIDEO_PIX_FMT,
+            "-c:a", AUDIO_CODEC, "-b:a", AUDIO_BITRATE,
+            "-movflags", "+faststart",
+            str(out_path),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            return True
+        except subprocess.CalledProcessError as e2:
+            log.warning("concat re-encode also failed: %s", e2.stderr or e2)
+            return False
+    finally:
+        Path(listing).unlink(missing_ok=True)
+
+
+def compose_highlight_reel(
+    gifs_by_play: dict[int, Path],
+    audio_by_play: dict[int, Path],
+    kinds_by_play: dict[int, str],
+    out_path: Path,
+    *,
+    work_dir: Path | None = None,
+) -> Path | None:
+    """Stitch per-play GIFs + mixed MP3s into one MP4 highlight reel.
+
+    Plays are concatenated in ascending play-index order (same order
+    they appear in the analyser output). Returns the output path, or
+    None if ffmpeg is missing or no clips could be produced.
+    """
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        log.warning("ffmpeg/ffprobe not on PATH; cannot compose video")
+        return None
+    if work_dir is None:
+        work_dir = out_path.parent / "_clips"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    clips: list[Path] = []
+    for idx in sorted(set(gifs_by_play) & set(audio_by_play)):
+        gif = gifs_by_play[idx]
+        audio = audio_by_play[idx]
+        kind = kinds_by_play.get(idx, "play")
+        clip = work_dir / f"{idx:02d}_{kind}.mp4"
+        if _encode_play_clip(gif, audio, clip):
+            clips.append(clip)
+    if not clips:
+        log.warning("no per-play clips produced; nothing to concat")
+        return None
+
+    if _concat_clips(clips, out_path):
+        log.info("composed %d play(s) into %s", len(clips), out_path)
+        return out_path
+    return None

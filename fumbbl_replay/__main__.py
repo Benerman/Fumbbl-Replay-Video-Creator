@@ -66,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Copy FFB game-event SFX (cheers, thuds, whistles) into this directory")
     parser.add_argument("--mix", type=Path, default=None,
                         help="Mix per-play TTS + SFX into a single mp3 (auto-runs --commentary/--tts/--sounds; requires ffmpeg)")
+    parser.add_argument("--video", type=Path, default=None,
+                        help="Compose final highlight MP4 from per-play GIFs + mixed MP3s (auto-runs --gifs/--mix; requires ffmpeg)")
     parser.add_argument("--tts-backend", choices=("kokoro", "say", "pyttsx3", "openai"), default=None,
                         help="TTS backend (default: kokoro - local neural TTS; env: FUMBBL_TTS_BACKEND)")
     parser.add_argument("--tts-voice", default=None,
@@ -131,6 +133,15 @@ def main(argv: list[str] | None = None) -> int:
         summary, team_home, team_away,
         events=event_list, player_lookup=player_lookup,
     )
+
+    # --video implies the full pipeline below it: we need gifs +
+    # mixed audio. Auto-derive the intermediate dirs next to the
+    # video output so a one-flag invocation works.
+    if args.video:
+        if not args.gifs:
+            args.gifs = args.video.parent / "vertical" / "gifs"
+        if not args.mix:
+            args.mix = args.video.parent / "mixed"
 
     # When --mix is requested we auto-derive intermediate output dirs
     # for commentary/TTS next to the mix dir so the user doesn't have
@@ -211,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             log.warning("SFX resolution failed: %s", e)
 
+    mix_paths: dict[int, Path] = {}
     if args.mix:
         from . import mix as mix_mod
         try:
@@ -309,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             n += 1
         log.info("rendered %d tableaux to %s", n, args.tableaux)
 
+    gif_paths: dict[int, Path] = {}
     if args.gifs:
         from . import animate
         n = 0
@@ -325,8 +338,25 @@ def main(argv: list[str] | None = None) -> int:
                 pitch_background=pitch_bg,
                 weather=weather,
             )
+            gif_paths[i] = out
             n += 1
         log.info("rendered %d gifs to %s", n, args.gifs)
+
+    if args.video:
+        from . import compose
+        if not gif_paths:
+            log.warning("--video needs --gifs output; nothing to compose")
+        elif not mix_paths:
+            log.warning("--video needs --mix output; nothing to compose")
+        else:
+            try:
+                result = compose.compose_highlight_reel(
+                    gif_paths, mix_paths, kinds, args.video,
+                )
+                if result:
+                    log.info("composed highlight video at %s", result)
+            except Exception as e:
+                log.warning("video compose failed: %s", e)
 
 
 def _logo_id_from_team(team: dict | None) -> int | None:
