@@ -29,10 +29,16 @@ class GifResult:
     """Output of render_play_gif. impact_ms is how many milliseconds into
     the clip the key visual moment (last dice reveal, or second-to-last
     frame for dice-less plays) lands — the mixer uses this to align the
-    SFX bed with what the viewer is actually seeing."""
+    SFX bed with what the viewer is actually seeing.
+
+    When frames_dir is set, the renderer also writes a full-resolution,
+    full-colour PNG sequence into that directory along with a `concat.txt`
+    ffmpeg can read directly. compose.py prefers this over the lossy
+    GIF intermediate so the final video keeps its colour depth."""
     path: Path
     impact_ms: int
     total_ms: int
+    frames_dir: Path | None = None
 
 # Field-affecting modelChangeIds. A frame is worth rendering only when
 # one of these fired in the command - dice, dialog, and turn-counter
@@ -66,6 +72,7 @@ def render_play_gif(
     frame_ms: int = 200,
     final_pause_ms: int = 1500,
     max_frames: int = 50,
+    frames_dir: Path | None = None,    # if set, also dump full-res PNG sequence + concat.txt here
 ) -> GifResult:
     """Render an animated GIF of the play's run-up.
 
@@ -145,10 +152,14 @@ def render_play_gif(
 
     frames: list[Image.Image] = []
     durations_per_frame: list[int] = []
+    frame_pngs: list[Path | None] = []      # parallel to frames[]: full-res PNG path or None
     active_dice: list[tuple[int, list]] = []
     prev_cn = -1
+    if frames_dir is not None:
+        frames_dir.mkdir(parents=True, exist_ok=True)
 
     def _render(state, dice_to_show, idx):
+        """Render one tableau. Returns (palette_image_for_gif, full_res_png_path_or_None)."""
         img_path = out_path.with_suffix(f".frame{idx:04d}.png")
         render_tableau(
             play, state, player_lookup, img_path,
@@ -163,11 +174,19 @@ def render_play_gif(
         im = Image.open(img_path)
         if gif_scale != 1.0:
             sw, sh = im.size
-            im = im.resize((int(sw * gif_scale), int(sh * gif_scale)),
-                            resample=Image.LANCZOS)
-        f = im.convert("P", palette=Image.ADAPTIVE, colors=palette_colors)
+            im_small = im.resize((int(sw * gif_scale), int(sh * gif_scale)),
+                                  resample=Image.LANCZOS)
+        else:
+            im_small = im
+        f = im_small.convert("P", palette=Image.ADAPTIVE, colors=palette_colors)
+        # Preserve the full-res PNG for video encoding when requested;
+        # otherwise drop it to save disk.
+        if frames_dir is not None:
+            dst = frames_dir / f"frame_{idx:04d}.png"
+            img_path.replace(dst)
+            return f, dst
         img_path.unlink()
-        return f
+        return f, None
 
     frame_idx = 0
     # Track the LAST appended dice-reveal frame so the audio mix
@@ -191,16 +210,19 @@ def render_play_gif(
         for group in new_groups:
             active_dice.append((DICE_LINGER_FRAMES, [group]))
             visible = [g for _, groups in active_dice for g in groups]
-            reveal_frame = _render(state, visible, frame_idx); frame_idx += 1
+            reveal_frame, reveal_png = _render(state, visible, frame_idx); frame_idx += 1
             for _ in range(REVEAL_DWELL_FRAMES + 1):
                 frames.append(reveal_frame)
                 durations_per_frame.append(frame_ms)
+                frame_pngs.append(reveal_png)
             last_dice_frame_idx = len(frames) - 1
 
         # Normal frame for the field state (no new dice).
         visible = [g for _, groups in active_dice for g in groups]
-        frames.append(_render(state, visible, frame_idx)); frame_idx += 1
+        frame_img, frame_png = _render(state, visible, frame_idx); frame_idx += 1
+        frames.append(frame_img)
         durations_per_frame.append(frame_ms)
+        frame_pngs.append(frame_png)
 
         prev_cn = cn
 
@@ -229,7 +251,28 @@ def render_play_gif(
         optimize=False,
         disposal=2,
     )
-    return GifResult(path=out_path, impact_ms=impact_ms, total_ms=total_ms)
+
+    # Emit an ffmpeg concat list alongside the PNGs. We group consecutive
+    # references to the same frame (e.g. a 5-frame dice-reveal hold) into
+    # one entry with a summed duration so ffmpeg doesn't open the file
+    # repeatedly. The last filename is duplicated per concat-demuxer quirk:
+    # without it the final entry's duration is silently dropped.
+    if frames_dir is not None and frame_pngs and all(p is not None for p in frame_pngs):
+        concat_lines: list[str] = []
+        i = 0
+        while i < len(frame_pngs):
+            cur = frame_pngs[i]
+            run_dur_ms = 0
+            while i < len(frame_pngs) and frame_pngs[i] == cur:
+                run_dur_ms += durations_per_frame[i]
+                i += 1
+            concat_lines.append(f"file '{cur.name}'")
+            concat_lines.append(f"duration {run_dur_ms / 1000.0:.3f}")
+        concat_lines.append(f"file '{frame_pngs[-1].name}'")
+        (frames_dir / "concat.txt").write_text("\n".join(concat_lines) + "\n")
+
+    return GifResult(path=out_path, impact_ms=impact_ms, total_ms=total_ms,
+                     frames_dir=frames_dir)
 
 
 def render_field_state_frames(

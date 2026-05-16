@@ -25,14 +25,17 @@ from typing import Iterable, Sequence
 log = logging.getLogger(__name__)
 
 # Encoding profile for the intermediates. The pad ensures even dimensions
-# (libx264 requires width/height divisible by 2) regardless of the GIF size.
+# (libx264 requires width/height divisible by 2) regardless of input size.
+# CRF 18 is visually near-lossless; preset 'slow' gives notably smaller
+# files than 'medium' for an extra second of encode per play, which is
+# fine for our 9-clip match-highlight workloads.
 VIDEO_CODEC = "libx264"
-VIDEO_PRESET = "veryfast"
-VIDEO_CRF = "20"
+VIDEO_PRESET = "slow"
+VIDEO_CRF = "18"
 VIDEO_PIX_FMT = "yuv420p"
 AUDIO_CODEC = "aac"
-AUDIO_BITRATE = "192k"
-FPS = 24
+AUDIO_BITRATE = "256k"
+FPS = 30
 
 
 def _audio_duration_seconds(path: Path) -> float:
@@ -47,27 +50,47 @@ def _audio_duration_seconds(path: Path) -> float:
         return 0.0
 
 
-def _encode_play_clip(gif: Path, audio: Path, out: Path) -> bool:
-    """Encode one play: stretch the GIF's final frame to fill the audio length.
+def _encode_play_clip(video_source: Path, audio: Path, out: Path,
+                       *, frames_dir: Path | None = None) -> bool:
+    """Encode one play. Stretches the source's final frame to fill the
+    audio length: movement → impact → linger-on-impact-while-voice-trails.
 
-    Movement → impact → linger-on-impact-while-voice-trails-off. The
-    `tpad=stop_mode=clone:stop_duration=N` extends the last frame for
-    N seconds rather than looping the whole gif back to start, which
-    would jarringly restart the play.
+    When `frames_dir` is provided (contains `concat.txt`), the high-res
+    PNG sequence is used as the video source — no GIF palette
+    quantisation, no downscale, full colour depth. Otherwise falls back
+    to the GIF at `video_source`.
     """
     audio_dur = _audio_duration_seconds(audio)
-    gif_dur = _audio_duration_seconds(gif)  # ffprobe reads gif frame timing too
     if audio_dur <= 0:
         log.warning("could not read audio duration for %s; skipping", audio.name)
         return False
-    pad_dur = max(0.0, audio_dur - gif_dur)
+
+    using_frames = frames_dir is not None and (frames_dir / "concat.txt").exists()
+    if using_frames:
+        concat_file = frames_dir / "concat.txt"
+        # Sum durations from concat.txt to get the source video length.
+        src_dur = 0.0
+        for line in concat_file.read_text().splitlines():
+            if line.startswith("duration "):
+                try:
+                    src_dur += float(line.split()[1])
+                except (ValueError, IndexError):
+                    pass
+        src_input = ["-f", "concat", "-safe", "0", "-i", str(concat_file)]
+    else:
+        src_dur = _audio_duration_seconds(video_source)
+        src_input = ["-i", str(video_source)]
+
+    pad_dur = max(0.0, audio_dur - src_dur)
+    # tpad=clone holds the last frame; fps re-times to constant rate; pad
+    # ensures even dimensions for libx264.
     vf = (
         f"tpad=stop_mode=clone:stop_duration={pad_dur:.3f},"
         f"fps={FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2"
     )
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(gif),
+        *src_input,
         "-i", str(audio),
         "-map", "0:v:0", "-map", "1:a:0",
         "-t", f"{audio_dur:.3f}",
@@ -82,7 +105,7 @@ def _encode_play_clip(gif: Path, audio: Path, out: Path) -> bool:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
         return True
     except subprocess.CalledProcessError as e:
-        log.warning("ffmpeg encode failed for %s: %s", gif.name, e.stderr or e)
+        log.warning("ffmpeg encode failed for %s: %s", video_source.name, e.stderr or e)
         return False
 
 
@@ -134,12 +157,17 @@ def compose_highlight_reel(
     out_path: Path,
     *,
     work_dir: Path | None = None,
+    frames_dirs_by_play: dict[int, Path] | None = None,
 ) -> Path | None:
-    """Stitch per-play GIFs + mixed MP3s into one MP4 highlight reel.
+    """Stitch per-play sources + mixed MP3s into one MP4 highlight reel.
 
-    Plays are concatenated in ascending play-index order (same order
-    they appear in the analyser output). Returns the output path, or
-    None if ffmpeg is missing or no clips could be produced.
+    Plays are concatenated in ascending play-index order. When
+    `frames_dirs_by_play[idx]` is provided, that PNG sequence (with
+    concat.txt) is used as the video source — full-resolution,
+    full-colour. Otherwise falls back to the matching GIF.
+
+    Returns the output path, or None if ffmpeg is missing or no
+    clips could be produced.
     """
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         log.warning("ffmpeg/ffprobe not on PATH; cannot compose video")
@@ -148,6 +176,7 @@ def compose_highlight_reel(
         work_dir = out_path.parent / "_clips"
     work_dir.mkdir(parents=True, exist_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    frames_dirs_by_play = frames_dirs_by_play or {}
 
     clips: list[Path] = []
     for idx in sorted(set(gifs_by_play) & set(audio_by_play)):
@@ -155,7 +184,8 @@ def compose_highlight_reel(
         audio = audio_by_play[idx]
         kind = kinds_by_play.get(idx, "play")
         clip = work_dir / f"{idx:02d}_{kind}.mp4"
-        if _encode_play_clip(gif, audio, clip):
+        if _encode_play_clip(gif, audio, clip,
+                             frames_dir=frames_dirs_by_play.get(idx)):
             clips.append(clip)
     if not clips:
         log.warning("no per-play clips produced; nothing to concat")

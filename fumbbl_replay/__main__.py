@@ -315,15 +315,23 @@ def main(argv: list[str] | None = None) -> int:
         log.info("rendered %d tableaux to %s", n, args.tableaux)
 
     gif_paths: dict[int, Path] = {}
+    frames_dirs: dict[int, Path] = {}
     impact_offsets_ms: dict[int, int] = {}
     target_durations_ms: dict[int, int] = {}
     if args.gifs:
         from . import animate
+        # When --video is set we also dump a full-res PNG frame sequence
+        # per play so the video encoder skips the GIF palette pass.
+        frames_root = (args.video.parent / "vertical" / "frames") if args.video else None
         n = 0
         for i, p in enumerate(analysis.pivotal, 1):
             if p.command_nr is None:
                 continue
             out = args.gifs / f"{i:02d}_{p.kind}_{p.command_nr}.gif"
+            per_play_frames_dir = (
+                frames_root / f"{i:02d}_{p.kind}_{p.command_nr}"
+                if frames_root else None
+            )
             result = animate.render_play_gif(
                 replay, p, player_lookup or {}, out,
                 sprites=player_sprites,
@@ -332,8 +340,11 @@ def main(argv: list[str] | None = None) -> int:
                 home_logo=home_logo_img, away_logo=away_logo_img,
                 pitch_background=pitch_bg,
                 weather=weather,
+                frames_dir=per_play_frames_dir,
             )
             gif_paths[i] = result.path
+            if result.frames_dir:
+                frames_dirs[i] = result.frames_dir
             impact_offsets_ms[i] = result.impact_ms
             target_durations_ms[i] = result.total_ms
             n += 1
@@ -355,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.video:
         from . import compose
+        import shutil as _shutil
         if not gif_paths:
             log.warning("--video needs --gifs output; nothing to compose")
         elif not mix_paths:
@@ -363,9 +375,19 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 result = compose.compose_highlight_reel(
                     gif_paths, mix_paths, kinds, args.video,
+                    frames_dirs_by_play=frames_dirs,
                 )
                 if result:
                     log.info("composed highlight video at %s", result)
+                # Clean up the PNG frame sequence (~250 MB for a typical
+                # match). We keep the per-play GIFs since users often
+                # want those standalone.
+                for d in frames_dirs.values():
+                    if d.exists():
+                        _shutil.rmtree(d, ignore_errors=True)
+                parent = (args.video.parent / "vertical" / "frames")
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
             except Exception as e:
                 log.warning("video compose failed: %s", e)
 
