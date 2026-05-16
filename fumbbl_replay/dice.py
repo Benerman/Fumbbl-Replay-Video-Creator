@@ -5,26 +5,80 @@ Each Blood Bowl command can carry multiple dice rolls in its
 that produced the moment so the viewer can read the result alongside
 the action.
 
-Block dice (6 faces):
-   1 = SKULL          attacker down
-   2 = BOTH_DOWN      both go down
-   3 = PUSH           defender pushed
-   4 = PUSH           defender pushed (same face as 3)
-   5 = STUMBLE        defender stumbles
-   6 = POW            defender down
+Block dice (6 faces, per BlockDiceCategory.java in the FFB client):
+   1 = PLAYERDOWN     attacker down (skull)
+   2 = BOTHDOWN       both go down (skull + burst)
+   3 = PUSHBACK1      defender pushed (blue up-arrow)
+   4 = PUSHBACK2      defender pushed (same icon as 3)
+   5 = STUMBLE        defender stumbles (outlined star)
+   6 = POW            defender down (filled star)
 
-Other rolls (dodge / GFI / pickup / pass / catch) are d6: 1..6.
+We fetch the actual PNGs from FFB's resources repo and cache them on
+disk - identical to how position icons are cached - so the rendered
+dice match what coaches see in the FFB client.
+
+Other rolls (dodge / GFI / pickup / pass / catch) are d6 1..6.
+FFB ships no per-face d6 PNG (only a single generic d6 sprite); we
+draw a numbered die inline.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
+import requests
 from PIL import Image, ImageDraw, ImageFont
 
+log = logging.getLogger(__name__)
 
 _BLOCK_FACE = {1: "SKULL", 2: "BOTH_DOWN", 3: "PUSH", 4: "PUSH", 5: "STUMBLE", 6: "POW"}
+
+# FFB's official dice PNGs. Faces 3 and 4 share one file (the client
+# cannot visually distinguish push-1 from push-2).
+_FFB_RAW_BASE = (
+    "https://raw.githubusercontent.com/christerk/ffb/master/"
+    "ffb-resources/src/main/resources/icons/sidebar/dice"
+)
+_BLOCK_DIE_FILES = {
+    1: "new_skool_black_1.png",
+    2: "new_skool_black_2.png",
+    3: "new_skool_black_3_4.png",
+    4: "new_skool_black_3_4.png",
+    5: "new_skool_black_5.png",
+    6: "new_skool_black_6.png",
+}
+
+_CACHE_DIR = Path(os.environ.get(
+    "FUMBBL_REPLAY_CACHE",
+    str(Path.home() / ".cache" / "fumbbl-replay-video-creator")
+)) / "dice"
+
+_block_die_cache: dict[int, Image.Image] = {}
+
+
+def fetch_block_die(face: int) -> Image.Image:
+    """Return the FFB PNG for one block-die face (1..6). Cached on disk
+    and in process."""
+    if face in _block_die_cache:
+        return _block_die_cache[face]
+    filename = _BLOCK_DIE_FILES.get(face)
+    if not filename:
+        raise ValueError(f"no FFB icon for block die face {face!r}")
+    cache_path = _CACHE_DIR / filename
+    if not cache_path.exists():
+        url = f"{_FFB_RAW_BASE}/{filename}"
+        log.info("GET %s", url)
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(r.content)
+    im = Image.open(cache_path).convert("RGBA")
+    _block_die_cache[face] = im
+    return im
 
 
 @dataclass
@@ -112,47 +166,27 @@ DIE_SUCCESS = (60, 150, 70)
 DIE_FAIL = (200, 60, 50)
 
 
-def draw_block_die(canvas: Image.Image, x: int, y: int, value: int, *, ring_color=None) -> None:
-    """Render a single block die at the given top-left corner."""
-    s = BLOCK_DIE_SIZE
+def draw_block_die(canvas: Image.Image, x: int, y: int, value: int, *, size: int | None = None) -> None:
+    """Paste the FFB block-die PNG at the given top-left corner."""
+    target = size or BLOCK_DIE_SIZE
+    try:
+        die = fetch_block_die(value)
+    except Exception as e:
+        log.warning("falling back to drawn die for face %s: %s", value, e)
+        _draw_fallback_die(canvas, x, y, value, target)
+        return
+    scale = target / max(die.size)
+    new_size = (max(1, int(die.size[0] * scale)), max(1, int(die.size[1] * scale)))
+    resized = die.resize(new_size, resample=Image.LANCZOS) if scale != 1.0 else die
+    sw, sh = resized.size
+    canvas.alpha_composite(resized, (x + (target - sw) // 2, y + (target - sh) // 2))
+
+
+def _draw_fallback_die(canvas: Image.Image, x: int, y: int, value: int, s: int) -> None:
+    """Used only when the FFB PNG fetch fails (offline / 404)."""
     draw = ImageDraw.Draw(canvas)
-    # rounded rectangle
-    draw.rounded_rectangle([x, y, x + s, y + s], radius=4, fill=DIE_BG,
-                            outline=(ring_color or (40, 40, 40)),
-                            width=2 if ring_color else 1)
-    face = _BLOCK_FACE.get(value, "?")
-    cx, cy = x + s // 2, y + s // 2
-    if face == "SKULL":
-        # Two eye holes, no mouth curve - reads as ominous, not a smiley.
-        # Tiny teeth bars below to seal the skull look.
-        draw.ellipse([cx - 5, cy - 5, cx - 2, cy - 1], fill=DIE_FG)
-        draw.ellipse([cx + 2, cy - 5, cx + 5, cy - 1], fill=DIE_FG)
-        draw.line([cx - 4, cy + 3, cx - 4, cy + 6], fill=DIE_FG, width=1)
-        draw.line([cx - 1, cy + 3, cx - 1, cy + 6], fill=DIE_FG, width=1)
-        draw.line([cx + 2, cy + 3, cx + 2, cy + 6], fill=DIE_FG, width=1)
-    elif face == "BOTH_DOWN":
-        # cross of two diagonal lines
-        draw.line([cx - 6, cy - 6, cx + 6, cy + 6], fill=DIE_FG, width=2)
-        draw.line([cx - 6, cy + 6, cx + 6, cy - 6], fill=DIE_FG, width=2)
-    elif face == "PUSH":
-        # right-pointing arrow
-        draw.line([cx - 6, cy, cx + 5, cy], fill=DIE_FG, width=2)
-        draw.polygon([(cx + 5, cy - 3), (cx + 5, cy + 3), (cx + 9 - 1, cy)], fill=DIE_FG)
-    elif face == "STUMBLE":
-        # push arrow with a chevron at the base
-        draw.line([cx - 6, cy, cx + 5, cy], fill=DIE_FG, width=2)
-        draw.polygon([(cx + 5, cy - 3), (cx + 5, cy + 3), (cx + 9 - 1, cy)], fill=DIE_FG)
-        draw.line([cx - 7, cy - 4, cx - 5, cy], fill=DIE_FG, width=2)
-        draw.line([cx - 7, cy + 4, cx - 5, cy], fill=DIE_FG, width=2)
-    elif face == "POW":
-        # star burst
-        for ang in range(0, 360, 45):
-            from math import cos, sin, radians
-            ex = int(cx + 7 * cos(radians(ang)))
-            ey = int(cy + 7 * sin(radians(ang)))
-            draw.line([cx, cy, ex, ey], fill=DIE_FG, width=2)
-    else:
-        draw.text((cx - 4, cy - 5), "?", fill=DIE_FG)
+    draw.rounded_rectangle([x, y, x + s, y + s], radius=4, fill=DIE_BG, outline=(40, 40, 40))
+    draw.text((x + s // 2 - 4, y + s // 2 - 6), str(value), fill=DIE_FG)
 
 
 def draw_d6(canvas: Image.Image, x: int, y: int, value: int, *, success: bool | None = None,
