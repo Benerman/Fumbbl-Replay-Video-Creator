@@ -48,6 +48,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Skip the FUMBBL position sprite fetch; render plain coloured tokens")
     parser.add_argument("--orientation", choices=("vertical", "horizontal"), default="vertical",
                         help="Pitch orientation in tableaux/GIFs (default: vertical)")
+    parser.add_argument("--pitch", choices=("auto", "nice", "sunny", "heat", "rain", "blizzard"),
+                        default="auto",
+                        help="Pitch background (default: auto - pick by replay weather)")
     parser.add_argument("--commentary", action="store_true",
                         help="Generate one whimsical commentary line per pivotal play")
     parser.add_argument("--commentary-backend", choices=("template", "ollama", "openai", "claude"),
@@ -63,8 +66,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Copy FFB game-event SFX (cheers, thuds, whistles) into this directory")
     parser.add_argument("--mix", type=Path, default=None,
                         help="Mix per-play TTS + SFX into a single mp3 (auto-runs --commentary/--tts/--sounds; requires ffmpeg)")
-    parser.add_argument("--tts-backend", choices=("say", "pyttsx3", "openai"), default=None,
-                        help="TTS backend (default: say on macOS; env: FUMBBL_TTS_BACKEND)")
+    parser.add_argument("--tts-backend", choices=("kokoro", "say", "pyttsx3", "openai"), default=None,
+                        help="TTS backend (default: kokoro - local neural TTS; env: FUMBBL_TTS_BACKEND)")
     parser.add_argument("--tts-voice", default=None,
                         help="Voice name for the chosen TTS backend (default per backend; env: FUMBBL_TTS_VOICE)")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -215,12 +218,17 @@ def main(argv: list[str] | None = None) -> int:
         away_logo_id = _logo_id_from_team(team_away) or _logo_id_from_replay_team(replay, "away")
         home_logo_img = sprites.fetch_team_logo(home_logo_id)
         away_logo_img = sprites.fetch_team_logo(away_logo_id)
-        # Weather-themed pitch background from FFB's Default.zip.
+        # Pitch background. Auto = use replay weather; otherwise force.
         from . import pitches
-        weather = pitches.weather_from_replay(replay)
-        pitch_bg = pitches.fetch_pitch(weather)
-        if pitch_bg is not None:
-            log.info("loaded pitch background for weather %r", weather)
+        if args.pitch == "auto":
+            weather = pitches.weather_from_replay(replay)
+            pitch_bg = pitches.fetch_pitch(weather)
+            if pitch_bg is not None:
+                log.info("loaded pitch background for weather %r", weather)
+        else:
+            pitch_bg = pitches.fetch_pitch_by_short_name(args.pitch)
+            if pitch_bg is not None:
+                log.info("loaded forced pitch %r", args.pitch)
 
     if args.tableaux or args.gifs:
         from . import dice as dice_mod

@@ -433,8 +433,9 @@ def _draw_endzone_labels(
 def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bool):
     """Render text in a box on an opaque dark strip so it pops against
     any pitch texture. Rotate 90° if the box is taller than it is wide."""
-    # Dark backing strip across the whole endzone band.
-    backing = Image.new("RGBA", (w, h), (10, 14, 16, 215))
+    # Dark backing strip across the whole endzone band — nearly fully
+    # opaque so the team name pops against any pitch texture.
+    backing = Image.new("RGBA", (w, h), (10, 14, 16, 250))
     img.alpha_composite(backing, (ox, oy))
 
     if not rotate:
@@ -488,7 +489,8 @@ def _draw_coord_labels(img: Image.Image, lay: Layout, font) -> None:
 
 def _chip_label(img: Image.Image, x: int, y: int, w: int, h: int,
                  text: str, color, font, draw: ImageDraw.ImageDraw) -> None:
-    chip = Image.new("RGBA", (w, h), (12, 16, 18, 230))
+    # Nearly-opaque dark chip so the digit reads clearly against any pitch.
+    chip = Image.new("RGBA", (w, h), (12, 16, 18, 250))
     img.alpha_composite(chip, (x, y))
     tw, _ = _text_size(draw, text, font)
     draw.text((x + (w - tw) // 2, y + 1), text, fill=color, font=font)

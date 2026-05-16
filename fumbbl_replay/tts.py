@@ -2,8 +2,15 @@
 
 Pluggable backends, matching the commentary module:
 
-  * `say` (default, macOS)  - shells out to `/usr/bin/say -v VOICE -o PATH TEXT`.
-                              Free, offline, zero install on macOS.
+  * `kokoro` (default)      - local neural TTS via the kokoro-onnx package.
+                              Near-ElevenLabs quality, runs on CPU, no API
+                              key. Auto-downloads the ~310MB ONNX model and
+                              ~28MB voices file into the shared cache on
+                              first use. Needs Python 3.10+ and
+                              `pip install kokoro-onnx soundfile`.
+  * `say` (macOS)           - shells out to `/usr/bin/say -v VOICE -o PATH TEXT`.
+                              Voices are robotic novelty fare; kept for
+                              fallback and "Premium" downloaded voices.
   * `pyttsx3` (cross-platform) - wraps the OS's native TTS (SAPI on Windows,
                               NSSpeechSynthesizer on macOS, espeak on Linux).
                               Optional dependency.
@@ -26,12 +33,9 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BACKEND = "say"
-# Gravelly macOS novelty voice that reads like an orc / goblin coach
-# yelling from the sidelines. Override with --tts-voice for a different
-# race vibe (Cellos = dramatic boomer, Bahh = snotling, Trinoids =
-# skaven warpstone radio, Cellos = vampire, etc.).
-DEFAULT_SAY_VOICE = "Bad News"
+DEFAULT_BACKEND = "kokoro"
+DEFAULT_KOKORO_VOICE = "am_michael"     # US male, natural sports-anchor read
+DEFAULT_SAY_VOICE = "Bad News"          # gravelly novelty fallback
 DEFAULT_PYTTSX3_VOICE: str | None = None  # let pyttsx3 pick
 DEFAULT_OPENAI_MODEL = "tts-1"
 DEFAULT_OPENAI_VOICE = "alloy"
@@ -60,7 +64,9 @@ def generate_audio(
     output_dir.mkdir(parents=True, exist_ok=True)
     pivotal_kinds = pivotal_kinds or {}
 
-    if backend == "say":
+    if backend == "kokoro":
+        renderer = _KokoroBackend(voice or os.environ.get("FUMBBL_TTS_VOICE", DEFAULT_KOKORO_VOICE))
+    elif backend == "say":
         renderer = _SayBackend(voice or os.environ.get("FUMBBL_TTS_VOICE", DEFAULT_SAY_VOICE))
     elif backend == "pyttsx3":
         renderer = _Pyttsx3Backend(voice or os.environ.get("FUMBBL_TTS_VOICE", DEFAULT_PYTTSX3_VOICE))
@@ -72,7 +78,7 @@ def generate_audio(
             model=os.environ.get("FUMBBL_TTS_MODEL", DEFAULT_OPENAI_MODEL),
         )
     else:
-        raise ValueError(f"unknown TTS backend {backend!r}; choose say|pyttsx3|openai")
+        raise ValueError(f"unknown TTS backend {backend!r}; choose kokoro|say|pyttsx3|openai")
 
     log.info("synthesising %d commentary lines via %s (voice=%s)",
              len(commentary_lines), backend, renderer.voice)
@@ -91,6 +97,62 @@ def generate_audio(
 
 
 # ---------------- backends ----------------
+
+_KOKORO_MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+_KOKORO_VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+
+
+class _KokoroBackend:
+    """Local neural TTS via kokoro-onnx. Model + voice files cached on
+    disk under the shared fumbbl-replay cache; first call downloads
+    them (~310MB + 28MB)."""
+    extension = "wav"
+    _instance = None  # lazy singleton; model load is the slow bit
+
+    def __init__(self, voice: str):
+        from pathlib import Path as _Path
+        try:
+            from kokoro_onnx import Kokoro  # type: ignore
+            import soundfile  # type: ignore  # noqa: F401
+        except ImportError as e:
+            raise RuntimeError(
+                "kokoro-onnx (and soundfile) required for the kokoro TTS backend. "
+                "Install with `pip install kokoro-onnx soundfile` (needs Python 3.10+)."
+            ) from e
+        cache_dir = _Path(os.environ.get(
+            "FUMBBL_REPLAY_CACHE",
+            str(_Path.home() / ".cache" / "fumbbl-replay-video-creator")
+        )) / "kokoro"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        model_path = cache_dir / "kokoro-v1.0.onnx"
+        voices_path = cache_dir / "voices-v1.0.bin"
+        self._download_if_missing(model_path, _KOKORO_MODEL_URL)
+        self._download_if_missing(voices_path, _KOKORO_VOICES_URL)
+        if _KokoroBackend._instance is None:
+            log.info("loading Kokoro model from %s", cache_dir)
+            _KokoroBackend._instance = Kokoro(str(model_path), str(voices_path))
+        self._kokoro = _KokoroBackend._instance
+        self.voice = voice
+
+    @staticmethod
+    def _download_if_missing(dest, url: str) -> None:
+        if dest.exists():
+            return
+        import requests
+        log.info("downloading %s (~%s)",
+                 url.rsplit('/', 1)[-1],
+                 "330MB" if "onnx" in str(dest) else "28MB")
+        r = requests.get(url, stream=True, timeout=300)
+        r.raise_for_status()
+        with dest.open("wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 20):
+                f.write(chunk)
+
+    def render(self, text: str, path: Path) -> None:
+        import soundfile as sf  # local import; lib already imported above
+        samples, sample_rate = self._kokoro.create(text, voice=self.voice, speed=1.0)
+        sf.write(str(path), samples, sample_rate)
+
 
 class _SayBackend:
     extension = "aiff"

@@ -2,3 +2,5 @@ requests>=2.31
 pillow>=10.0
 anthropic>=0.45
 pydantic>=2.0
+# Optional - for the kokoro TTS backend (needs Python >= 3.10):
+#   pip install kokoro-onnx soundfile
