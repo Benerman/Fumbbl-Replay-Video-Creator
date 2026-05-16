@@ -79,6 +79,7 @@ class PivotalPlay:
     injury_label: str | None = None
     reason: str | None = None        # casualty: "blocked" / "fouled" / "crowdPushed"
     was_blitz: bool = False          # True when the play was declared a Blitz action
+    blitz_target_id: str | None = None  # the OPPONENT blocked during the blitz (for badge anchor)
     tags: list[str] = field(default_factory=list)
 
     def headline(self) -> str:
@@ -311,6 +312,7 @@ def _pivotal_from_events(
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
                 was_blitz=e.was_blitz,
+                blitz_target_id=e.blitz_target_id,
                 tags=tags,
             ))
         elif e.kind == "interception":
@@ -324,6 +326,7 @@ def _pivotal_from_events(
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
                 was_blitz=e.was_blitz,
+                blitz_target_id=e.blitz_target_id,
                 tags=[],
             ))
         elif e.kind in ("kill", "serious_injury", "badly_hurt"):
@@ -352,6 +355,7 @@ def _pivotal_from_events(
                 injury_label=e.detail,
                 reason=e.reason,
                 was_blitz=e.was_blitz,
+                blitz_target_id=e.blitz_target_id,
                 tags=tags,
             ))
         elif e.kind in ("self_kill", "triple_skull", "double_skull", "clutch_fail"):
@@ -399,6 +403,7 @@ def _blunder_play(e: Event, team: TeamInfo, opp: TeamInfo, resolve_name) -> Pivo
         injury_label=e.detail if e.kind == "self_kill" else None,
         reason=e.reason,
         was_blitz=e.was_blitz,
+        blitz_target_id=e.blitz_target_id,
         tags=[],
     )
 

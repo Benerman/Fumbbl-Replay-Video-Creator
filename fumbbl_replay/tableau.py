@@ -173,9 +173,13 @@ def render_tableau(
     _draw_ball(draw, lay, state)
     # Layer 6: players + their state markers + the highlight ring.
     _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
-    # Layer 6b: BLITZ badge above the actor for blitz-declared plays.
-    if play.was_blitz:
-        _draw_blitz_badge(img, draw, lay, state, targets, _font(11))
+    # Layer 6b: BLITZ badge on the OPPONENT that was marked against
+    # (the block defender during the blitz). We only show the badge
+    # when we actually know who that was — for plays where the action
+    # was Blitz but no block landed (e.g. a self-kill on the GFI to
+    # contact), the chip would have nowhere honest to anchor.
+    if play.was_blitz and play.blitz_target_id:
+        _draw_blitz_badge(img, draw, lay, state, play.blitz_target_id, _font(11))
     # Layer 7: dice rolls that produced this play, positioned over the actor.
     if dice:
         _draw_dice(img, lay, state, dice, targets, tiny)
@@ -285,10 +289,11 @@ def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
 
 
 def _draw_blitz_badge(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
-                       state: FieldState, targets: "TableauTargets", font) -> None:
-    """Stamp a small bright BLITZ chip next to the acting (inflicter)
-    player so the viewer knows the casualty came from a blitz move."""
-    anchor_pid = targets.inflicter or targets.scorer
+                       state: FieldState, target_pid: str, font) -> None:
+    """Stamp a small bright BLITZ chip next to the OPPONENT the blitzer
+    marked against (the block defender) so the viewer knows which player
+    was targeted by the blitz move."""
+    anchor_pid = target_pid
     if not anchor_pid:
         return
     anchor_pos = state.players.get(anchor_pid)
