@@ -64,14 +64,18 @@ def render_play_gif(
     start = max(1, end - lookback_cmds)
     cmds: Iterable[dict[str, Any]] = replay.get("gameLog", {}).get("commandArray", []) or []
 
-    # The end-frame stop_at is the same as for static tableaux.
+    # End-frame strategy depends on the play kind.
+    # - touchdown: stop in-cmd before the post-score sweep that moves
+    #   every player to the dugout.
+    # - casualty: walk a few commands PAST the event so the victim
+    #   physically leaves the pitch (FFB fires fieldModelRemovePlayer
+    #   in the same cmd as the casualty trigger). Visualises the
+    #   KO/BH/SI/RIP -> dugout transition the user expects to see.
+    # - other (skull, clutch_fail, interception): just the event cmd.
     if play.kind == "touchdown":
         last_stop = {"teamResultSetScore"}
     elif play.kind == "casualty":
-        # For casualties we already snapshot cmd_nr - 1 in the static
-        # path; for the animation the final frame is just cmd_nr - 1
-        # too, so no in-cmd stop is needed.
-        end = end - 1
+        end = play.command_nr + 4
         last_stop = set()
     else:
         last_stop = set()

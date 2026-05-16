@@ -273,30 +273,43 @@ def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
 
 def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,
                 dice: list, targets: "TableauTargets", font) -> None:
-    """Stamp dice icons above the actor/inflicter for each DiceGroup."""
+    """Stamp dice icons above the actor for each DiceGroup. Multiple
+    groups sharing an anchor stack VERTICALLY (block on top, armor in
+    the middle, injury at the bottom) so they don't overlap."""
     from . import dice as dice_mod
     if not dice:
         return
+    # Bucket groups by anchor first; render each bucket as a stack.
+    buckets: dict[str, list] = {}
+    fallback = targets.inflicter or targets.scorer or targets.victim
     for group in dice:
-        # Pick the anchor: the rolling player, falling back to the highlighted
-        # player when the report didn't carry an explicit actor id.
-        anchor_pid = group.actor_id or targets.inflicter or targets.scorer or targets.victim
-        anchor_pos = state.players.get(anchor_pid or "")
+        anchor_pid = group.actor_id or fallback
+        if not anchor_pid:
+            continue
+        buckets.setdefault(anchor_pid, []).append(group)
+    for anchor_pid, groups in buckets.items():
+        anchor_pos = state.players.get(anchor_pid)
         if not anchor_pos:
             continue
         ax, ay = anchor_pos
         if not (0 <= ax < PITCH_WIDTH and 0 <= ay < PITCH_HEIGHT):
             continue
         cx, cy = lay.bb_to_screen(ax, ay)
-        strip = dice_mod.render_group_strip(group, font=font)
-        sw, sh = strip.size
-        # Sit the strip just above the player token (TILE/2 + small offset).
-        sx = cx - sw // 2
-        sy = cy - TILE // 2 - sh - 1
-        # Clamp inside the pitch.
-        sx = max(lay.ox + 2, min(sx, lay.ox + lay.pitch_w - sw - 2))
-        sy = max(lay.oy + 2, sy)
-        img.alpha_composite(strip, (sx, sy))
+        # Render each strip, top-aligned upwards from the player token.
+        strips = [dice_mod.render_group_strip(g, font=font) for g in groups]
+        gap = 2
+        total_h = sum(s.size[1] for s in strips) + gap * (len(strips) - 1)
+        max_w = max(s.size[0] for s in strips)
+        # Top edge of the stack sits TILE/2+2 above the token centre.
+        top_y = cy - TILE // 2 - total_h - 2
+        top_y = max(lay.oy + 2, top_y)
+        y = top_y
+        for strip in strips:
+            sw, sh = strip.size
+            sx = cx - sw // 2
+            sx = max(lay.ox + 2, min(sx, lay.ox + lay.pitch_w - sw - 2))
+            img.alpha_composite(strip, (sx, y))
+            y += sh + gap
 
 
 def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> None:

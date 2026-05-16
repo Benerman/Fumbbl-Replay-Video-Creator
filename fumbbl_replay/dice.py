@@ -83,19 +83,21 @@ def fetch_block_die(face: int) -> Image.Image:
 
 @dataclass
 class DiceGroup:
-    """One block or d6 roll resolved during a command.
+    """One dice resolution during a command.
 
-    `kind` distinguishes a block roll (multi-die, special faces) from a
-    plain d6 roll. `actor_id` is the player rolling. `target` is the
-    minimum needed (d6 only) or the defender id (block only).
+    `kind` distinguishes block (multi-die, special faces), plain d6
+    (one die, success threshold), and 2d6 rolls (armor + injury, where
+    the result is a sum vs threshold).
     """
-    kind: Literal["block", "d6"]
-    label: str                  # "block" / "dodge" / "gfi" / "pickup" / "pass" / "catch"
-    rolls: list[int]            # for blocks: list of face values 1..6; for d6: [roll]
+    kind: Literal["block", "d6", "2d6"]
+    label: str                  # "block" / "dodge" / "gfi" / "pickup" / "pass" / "catch" / "armor" / "injury"
+    rolls: list[int]            # block: 1..6 face values; d6: [roll]; 2d6: [die1, die2]
     actor_id: str | None = None
     defender_id: str | None = None
-    minimum: int | None = None  # d6: minimum to succeed
+    minimum: int | None = None  # d6/2d6: minimum to succeed (sum for 2d6)
     successful: bool | None = None
+    # Caption shown under the strip in the renderer ("armor", "injury", etc.).
+    caption: str | None = None
 
 
 def extract_for_command(
@@ -140,6 +142,35 @@ def extract_for_command(
                     actor_id=acting,
                     defender_id=str(r.get("defenderId")) if r.get("defenderId") else None,
                 ))
+            elif rid == "injury":
+                # FFB emits two `injury` reports per casualty event:
+                # one for armor+injury (skipInjuryParts="CAS") and a
+                # second for the casualty phase only
+                # (skipInjuryParts="EVERYTHING_BUT_CAS"), both carrying
+                # the same armor/injury dice. We only want the first;
+                # the casualty severity is already surfaced via the
+                # slash/X marker on the victim.
+                if r.get("skipInjuryParts") == "EVERYTHING_BUT_CAS":
+                    continue
+                victim = str(r.get("defenderId")) if r.get("defenderId") else None
+                armor_roll = r.get("armorRoll") or []
+                if len(armor_roll) == 2:
+                    out.append(DiceGroup(
+                        kind="2d6", label="armor",
+                        rolls=[int(armor_roll[0]), int(armor_roll[1])],
+                        actor_id=acting, defender_id=victim,
+                        successful=bool(r.get("armorBroken")) if r.get("armorBroken") is not None else None,
+                        caption="armor",
+                    ))
+                injury_roll = r.get("injuryRoll") or []
+                if r.get("armorBroken") and len(injury_roll) == 2:
+                    out.append(DiceGroup(
+                        kind="2d6", label="injury",
+                        rolls=[int(injury_roll[0]), int(injury_roll[1])],
+                        actor_id=acting, defender_id=victim,
+                        successful=None,
+                        caption="injury",
+                    ))
             elif rid in ("dodgeRoll", "goForItRoll", "pickUpRoll", "passRoll", "catchRoll"):
                 label = {"dodgeRoll": "dodge", "goForItRoll": "gfi", "pickUpRoll": "pickup",
                          "passRoll": "pass", "catchRoll": "catch"}[rid]
@@ -210,20 +241,41 @@ def render_group_strip(group: DiceGroup, font: ImageFont.ImageFont | None = None
     """Render one DiceGroup as a small horizontal strip on a transparent canvas.
 
     Strip layout: [die][die]... with 2px between, plus an optional
-    success/fail border colour for d6 rolls.
+    caption underneath ("armor" / "injury") for 2d6 groups.
     """
+    caption = group.caption
+    caption_h = 12 if caption else 0
     if group.kind == "block":
         s = BLOCK_DIE_SIZE
         gap = 2
         w = len(group.rolls) * s + (len(group.rolls) - 1) * gap
-        canvas = Image.new("RGBA", (w + 4, s + 4), (0, 0, 0, 0))
+        canvas = Image.new("RGBA", (w + 4, s + 4 + caption_h), (0, 0, 0, 0))
         x = 2
         for v in group.rolls:
             draw_block_die(canvas, x, 2, v)
             x += s + gap
-        return canvas
-    # d6
-    s = D6_SIZE
-    canvas = Image.new("RGBA", (s + 4, s + 4), (0, 0, 0, 0))
-    draw_d6(canvas, 2, 2, group.rolls[0], success=group.successful, font=font)
+    elif group.kind == "2d6":
+        s = D6_SIZE
+        gap = 2
+        w = 2 * s + gap
+        canvas = Image.new("RGBA", (w + 4, s + 4 + caption_h), (0, 0, 0, 0))
+        for i, v in enumerate(group.rolls):
+            # For armor: success border = armor broken (bad for victim, "successful" attack).
+            draw_d6(canvas, 2 + i * (s + gap), 2, v, success=group.successful, font=font)
+    else:  # d6
+        s = D6_SIZE
+        canvas = Image.new("RGBA", (s + 4, s + 4 + caption_h), (0, 0, 0, 0))
+        draw_d6(canvas, 2, 2, group.rolls[0], success=group.successful, font=font)
+    if caption:
+        d = ImageDraw.Draw(canvas)
+        # Small black-on-translucent caption strip under the dice.
+        cap_y = canvas.size[1] - caption_h
+        d.rectangle([0, cap_y, canvas.size[0], canvas.size[1]], fill=(0, 0, 0, 160))
+        cap_font = ImageFont.load_default() if font is None else font
+        try:
+            l, t, r, b = d.textbbox((0, 0), caption, font=cap_font)
+            tw = r - l
+        except AttributeError:
+            tw, _ = d.textsize(caption, font=cap_font)
+        d.text(((canvas.size[0] - tw) / 2, cap_y + 1), caption, fill=(245, 245, 240), font=cap_font)
     return canvas
