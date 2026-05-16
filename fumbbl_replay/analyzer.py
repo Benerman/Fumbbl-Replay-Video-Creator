@@ -310,6 +310,7 @@ def _pivotal_from_events(
                 score_home=e.score_home, score_away=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
+                was_blitz=e.was_blitz,
                 tags=tags,
             ))
         elif e.kind == "interception":
@@ -322,6 +323,7 @@ def _pivotal_from_events(
                 score_home=e.score_home, score_away=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
+                was_blitz=e.was_blitz,
                 tags=[],
             ))
         elif e.kind in ("kill", "serious_injury", "badly_hurt"):

@@ -49,6 +49,8 @@ def render_play_gif(
     pitch_background: Image.Image | None = None,
     weather: str | None = None,
     lookback_cmds: int = 60,
+    gif_scale: float = 0.55,           # output GIF dimensions vs. tableau (smaller = faster + smaller files)
+    palette_colors: int = 96,          # fewer colours = smaller GIF, blockier gradients
     frame_ms: int = 200,
     final_pause_ms: int = 1500,
     max_frames: int = 50,
@@ -142,7 +144,12 @@ def render_play_gif(
             pitch_background=pitch_background,
             weather=weather,
         )
-        f = Image.open(img_path).convert("P", palette=Image.ADAPTIVE)
+        im = Image.open(img_path)
+        if gif_scale != 1.0:
+            sw, sh = im.size
+            im = im.resize((int(sw * gif_scale), int(sh * gif_scale)),
+                            resample=Image.LANCZOS)
+        f = im.convert("P", palette=Image.ADAPTIVE, colors=palette_colors)
         img_path.unlink()
         return f
 

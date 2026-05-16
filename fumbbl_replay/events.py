@@ -21,7 +21,7 @@ itself.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 
@@ -33,10 +33,19 @@ class PlayerInfo:
     side: str           # "home" | "away"
     position_id: str | None
     portrait_url: str | None
+    # Stats (BB2020 conventions). AG/PA/AV are "need X+ to succeed";
+    # we keep them as bare numbers and the renderer adds the "+" suffix.
+    movement: int | None = None
+    strength: int | None = None
+    agility: int | None = None
+    passing: int | None = None
+    armour: int | None = None
+    skills: list[str] = field(default_factory=list)
 
 
 def roster_from_replay(replay: dict[str, Any]) -> dict[str, PlayerInfo]:
-    """Build a {playerId -> PlayerInfo} map from the replay's in-game rosters."""
+    """Build a {playerId -> PlayerInfo} map from the replay's in-game rosters,
+    including stats (MA/ST/AG/PA/AV) and skill list."""
     out: dict[str, PlayerInfo] = {}
     game = replay.get("game") or {}
     for side in ("home", "away"):
@@ -45,6 +54,7 @@ def roster_from_replay(replay: dict[str, Any]) -> dict[str, PlayerInfo]:
             pid = str(p.get("playerId") or "")
             if not pid:
                 continue
+            skills = p.get("skillArray") or []
             out[pid] = PlayerInfo(
                 player_id=pid,
                 name=str(p.get("playerName") or "").strip() or pid,
@@ -52,6 +62,12 @@ def roster_from_replay(replay: dict[str, Any]) -> dict[str, PlayerInfo]:
                 side=side,
                 position_id=str(p.get("positionId") or "") or None,
                 portrait_url=p.get("urlPortrait") or None,
+                movement=p.get("movement"),
+                strength=p.get("strength"),
+                agility=p.get("agility"),
+                passing=p.get("passing"),
+                armour=p.get("armour"),
+                skills=list(skills),
             )
     return out
 
@@ -165,6 +181,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                     half=half, turn=event_turn,
                     score_home=score_home, score_away=score_away,
                     player_id=scorer,
+                    was_blitz=(current_action or "").lower() in ("blitz", "blitzmove"),
                 ))
             elif mid == "teamResultSetRipSuffered" and side in ("home", "away"):
                 meta = send_box.get(victim or "", {})
@@ -213,6 +230,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                     turn=turn_home if int_side == "home" else turn_away,
                     score_home=score_home, score_away=score_away,
                     player_id=interceptor,
+                    was_blitz=(current_action or "").lower() in ("blitz", "blitzmove"),
                 ))
 
         # Phase 4: scan reportList for "epic fail" events.
@@ -267,6 +285,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                         player_id=victim_pid,
                         detail=r.get("seriousInjury"),
                         reason=r.get("injuryType"),
+                        was_blitz=(current_action or "").lower() in ("blitz", "blitzmove"),
                     ))
             elif rid == "pickUpRoll":
                 if r.get("successful") or r.get("reRolled"):

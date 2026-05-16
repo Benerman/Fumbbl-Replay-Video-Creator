@@ -52,7 +52,7 @@ _MARKER_WIDTH = 3
 # (numbers 1-12 down each side / along each edge).
 MARGIN_X = 30
 MARGIN_TOP = 50
-CAPTION_H = 92  # caption + dugout-status strip
+CAPTION_H = 124  # caption + stats line(s) + dugout-status strip
 # Field colours.
 PITCH_GREEN = (40, 90, 50)
 PITCH_LINE = (200, 220, 200)
@@ -179,8 +179,9 @@ def render_tableau(
     # Layer 7: dice rolls that produced this play, positioned over the actor.
     if dice:
         _draw_dice(img, lay, state, dice, targets, tiny)
-    # Layer 8: caption strip + dugout status.
-    _draw_caption(draw, lay, play, state, font, small)
+    # Layer 8: caption strip + per-player stats line(s) + dugout status.
+    next_y = _draw_caption(draw, lay, play, state, font, small)
+    _draw_stats_lines(draw, lay, play, player_lookup, small, y_start=next_y)
     _draw_dugout_strip(draw, lay, state, player_lookup,
                         home_name=home_name, away_name=away_name, font=small)
 
@@ -350,6 +351,66 @@ def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,
             y += sh + gap
 
 
+def _draw_stats_lines(
+    draw: ImageDraw.ImageDraw,
+    lay: Layout,
+    play: PivotalPlay,
+    player_lookup: dict[str, PlayerInfo],
+    font,
+    *,
+    y_start: int | None = None,
+) -> None:
+    """One short stats/skills line per featured player.
+
+    Format per line:
+      "Name (Race) — MA7 ST3 AG2+ PA3+ AV9+ — Block, Sidestep, ..."
+
+    For TDs / interceptions / blunders we show the actor only. For
+    casualties we show victim AND inflicter (two lines). Skills list
+    is truncated to fit the canvas width.
+    """
+    ids_in_order: list[tuple[str, tuple[int, int, int]]] = []
+    if play.kind == "casualty":
+        if play.player_id:
+            ids_in_order.append((play.player_id, AWAY_COLOR if play.team_name == play.against_team else HOME_COLOR))
+        if play.inflicter_id:
+            # Inflicter is on the OPPOSITE team to the victim.
+            ids_in_order.append((play.inflicter_id, AWAY_COLOR))
+    else:
+        if play.player_id:
+            ids_in_order.append((play.player_id, HOME_COLOR))
+
+    # Resolve actor side via player_lookup so colours are right.
+    cap_y = lay.oy + lay.pitch_h + (8 if lay.orientation == "vertical" else _COORD_BAND + 8)
+    # Stats lines slot directly after whatever caption text was drawn.
+    y = y_start if y_start is not None else cap_y + 36
+    line_h = 12
+    for pid, _fallback in ids_in_order:
+        info = player_lookup.get(pid)
+        if not info:
+            continue
+        color = HOME_COLOR if info.side == "home" else AWAY_COLOR
+        bits = []
+        if info.movement is not None: bits.append(f"MA{info.movement}")
+        if info.strength is not None: bits.append(f"ST{info.strength}")
+        if info.agility is not None:  bits.append(f"AG{info.agility}+")
+        if info.passing is not None:  bits.append(f"PA{info.passing}+")
+        if info.armour is not None:   bits.append(f"AV{info.armour}+")
+        stats = " ".join(bits)
+        skill_list = list(info.skills)
+        skills = ", ".join(skill_list) if skill_list else "—"
+        prefix = f"#{info.number or '-':<2} {info.name}  •  {stats}  •  "
+        line = prefix + skills
+        # Trim skills from the tail one by one until the line fits.
+        max_w = lay.img_w - 2 * lay.ox
+        while skill_list and _text_size(draw, line, font)[0] > max_w:
+            skill_list.pop()
+            skills = (", ".join(skill_list) + ", …") if skill_list else "…"
+            line = prefix + skills
+        draw.text((lay.ox, y), line, fill=color, font=font)
+        y += line_h
+
+
 def _draw_dugout_strip(
     draw: ImageDraw.ImageDraw,
     lay: Layout,
@@ -366,8 +427,10 @@ def _draw_dugout_strip(
     counts = state.dugout_counts(player_lookup)
     abbrev = lambda n: (n[:14] + "…") if n and len(n) > 15 else (n or "")
     line_h = 12
-    # Caption strip uses the first ~36 px; we get the rest of CAPTION_H.
-    y = lay.oy + lay.pitch_h + (8 if lay.orientation == "vertical" else _COORD_BAND + 8) + 36
+    # Caption uses ~36 px, stats lines take 0-2 lines (12 px each).
+    # Anchor the dugout strip near the BOTTOM of CAPTION_H so we don't
+    # need to know how many stats lines were drawn above.
+    y = lay.oy + lay.pitch_h + CAPTION_H - 2 * line_h - 6
     cats = ("res", "ko", "bh", "si", "rip", "ban")
     for side, color, name in (("home", HOME_COLOR, abbrev(home_name)),
                                 ("away", AWAY_COLOR, abbrev(away_name))):
@@ -377,7 +440,8 @@ def _draw_dugout_strip(
         y += line_h
 
 
-def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> None:
+def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> int:
+    """Render the [weight] + wrapped headline. Returns the y of the next free row."""
     weight_str = f"[{play.weight:.2f}]"
     # In horizontal mode the row labels occupy the band immediately below
     # the pitch, so the caption needs to start below that.
@@ -387,14 +451,10 @@ def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font,
     wt_w, _ = _text_size(draw, weight_str, font)
     caption_x = lay.ox + wt_w + 6
     max_caption_w = lay.img_w - caption_x - lay.ox
-    lines = _wrap_text(draw, play.headline(), font, max_caption_w)
-    for i, line in enumerate(lines[:3]):
+    lines = _wrap_text(draw, play.headline(), font, max_caption_w)[:3]
+    for i, line in enumerate(lines):
         draw.text((caption_x, cap_y + i * 14), line, fill=TEXT, font=font)
-    n_off = len(state.off_pitch())
-    if n_off:
-        draw.text((lay.ox, cap_y + len(lines) * 14 + 4),
-                  f"({n_off} players off-pitch / in dugout)",
-                  fill=DIM_TEXT, font=small)
+    return cap_y + len(lines) * 14 + 4
 
 
 def _targets_for_play(play: PivotalPlay) -> TableauTargets:
