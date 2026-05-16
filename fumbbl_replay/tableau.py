@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .analyzer import PivotalPlay
 from .events import PlayerInfo
@@ -59,6 +59,12 @@ ENDZONE_TINT = (60, 110, 60)
 WIDE_TINT = (50, 100, 60)
 HOME_COLOR = (60, 110, 200)
 AWAY_COLOR = (200, 70, 60)
+# Colorize ramps for forcing team-coloured sprites. Each ramp is (black, mid, white):
+# dark shadows stay near-black, jersey-bright pixels land on the team colour,
+# highlights wash to a paler version. Sprite detail (silhouette, shading) is
+# preserved; the only thing that changes is the hue of the saturated areas.
+_HOME_RAMP = ((10, 20, 60), HOME_COLOR, (200, 220, 255))
+_AWAY_RAMP = ((60, 10, 10), AWAY_COLOR, (255, 220, 210))
 HIGHLIGHT = (255, 215, 0)
 BALL_COLOR = (240, 240, 240)
 TEXT = (240, 240, 230)
@@ -136,13 +142,15 @@ def render_tableau(
             # Coloured disc behind the sprite for team identification.
             disc_r = r + 1
             draw.ellipse([cx - disc_r, cy - disc_r, cx + disc_r, cy + disc_r], fill=color + (255,))
-            sw, sh = sprite.size
+            ramp = _HOME_RAMP if side == "home" else _AWAY_RAMP
+            sprite_tinted = _colorize_to_team(sprite, ramp)
+            sw, sh = sprite_tinted.size
             scale = (TILE - 4) / max(sw, sh)
             if scale != 1.0:
-                sprite_resized = sprite.resize((max(1, int(sw * scale)), max(1, int(sh * scale))),
-                                                resample=Image.NEAREST)
+                sprite_resized = sprite_tinted.resize((max(1, int(sw * scale)), max(1, int(sh * scale))),
+                                                       resample=Image.NEAREST)
             else:
-                sprite_resized = sprite
+                sprite_resized = sprite_tinted
             if is_dead:
                 # KO / casualty in the transitional pre-dugout-move state: dim it.
                 sprite_resized = _dim(sprite_resized)
@@ -230,6 +238,27 @@ def _header_text(p: PivotalPlay) -> str:
     return " ".join(bits)
 
 
+def _colorize_to_team(sprite: Image.Image, ramp: tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]) -> Image.Image:
+    """Re-tone a sprite into the team's colour scheme.
+
+    FUMBBL exposes no team colour metadata, and the icon-sheet rows
+    aren't tagged by team colour, so we can't reliably pick a row that
+    matches the user's jersey. Instead we colorize the sprite by
+    luminance through a three-stop ramp (dark / mid / light). Sprite
+    detail (silhouette, shading) is preserved; saturated areas land
+    on the team's mid colour.
+    """
+    if sprite.mode != "RGBA":
+        sprite = sprite.convert("RGBA")
+    gray = sprite.convert("L")
+    alpha = sprite.split()[-1]
+    black, mid, white = ramp
+    rgb = ImageOps.colorize(gray, black=black, mid=mid, white=white)
+    out = rgb.convert("RGBA")
+    out.putalpha(alpha)
+    return out
+
+
 def _dim(im: Image.Image) -> Image.Image:
     """Knock the brightness down on a sprite to mark it as out-of-action."""
     out = im.copy()
@@ -245,11 +274,16 @@ def _dim(im: Image.Image) -> Image.Image:
 
 def _draw_prone_slash(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int) -> None:
     """Bright red slash across the player — matches the FFB client's prone marker."""
+    # Black outline first, then the red marker on top — keeps the X / slash
+    # readable on both blue and red sprites.
+    draw.line([cx - r, cy + r, cx + r, cy - r], fill=(0, 0, 0), width=_MARKER_WIDTH + 2)
     draw.line([cx - r, cy + r, cx + r, cy - r], fill=_MARKER_COLOR, width=_MARKER_WIDTH)
 
 
 def _draw_stun_x(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int) -> None:
     """Bright red X across the player — matches the FFB client's stunned marker."""
+    draw.line([cx - r, cy - r, cx + r, cy + r], fill=(0, 0, 0), width=_MARKER_WIDTH + 2)
+    draw.line([cx - r, cy + r, cx + r, cy - r], fill=(0, 0, 0), width=_MARKER_WIDTH + 2)
     draw.line([cx - r, cy - r, cx + r, cy + r], fill=_MARKER_COLOR, width=_MARKER_WIDTH)
     draw.line([cx - r, cy + r, cx + r, cy - r], fill=_MARKER_COLOR, width=_MARKER_WIDTH)
 
