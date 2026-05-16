@@ -18,10 +18,15 @@ $ python -m fumbbl_replay 1901135
   ...
   Pivotal plays (6, from replay event log):
      1. [1.00] Skurrrk-Gnash (Neck Snappers) scored a touchdown (turn 8, half 1)
-     2. [0.50] Gozzax (Neck Snappers) was seriously injured (turn 1, half 1) - Head Injury (-AV)
-     3. [0.50] Jón Hávarrs (Torcy United) was seriously injured (turn 2, half 2) - Serious Injury (NI)
+     2. [0.50] Gozzax (Neck Snappers) was seriously injured by Egill Ólison (Torcy United) (turn 1, half 1) - Head Injury (-AV)
+     3. [0.50] Jón Hávarrs (Torcy United) was seriously injured by Skurrrk-Gnash (Neck Snappers) (turn 2, half 2) - Serious Injury (NI)
      ...
 ```
+
+Headlines pick up context tags too: a TD is rendered as "scored the
+game-winning touchdown", "scored a tying touchdown", or "scored a
+comeback touchdown" when applicable. Casualty headlines name the
+inflicter and distinguish blocked / fouled / crowd-pushed.
 
 `<replay-ref>` accepts:
 * a bare match id, e.g. `1901135`
@@ -67,9 +72,19 @@ python -m fumbbl_replay 1901135 --json
 # Save the raw gzipped replay alongside the report
 python -m fumbbl_replay 1901135 --dump-replay out/1901135.json.gz
 
+# Render a PNG tableau per pivotal play (spike-quality)
+python -m fumbbl_replay 4700842 --tableaux out/tableaux
+
+# Render an animated GIF of each pivotal play's run-up
+python -m fumbbl_replay 4700842 --gifs out/gifs
+
 # Skip the replay step, use just summary totals (no player names, no turn)
 python -m fumbbl_replay 1901135 --no-replay
 ```
+
+A self-contained project showcase (with embedded sample tableaux and
+a sample animated drive) lives at [`docs/overview.html`](docs/overview.html);
+regenerate with `python -m scripts.build_overview`.
 
 ### Module layout
 
@@ -80,6 +95,11 @@ fumbbl_replay/
   fumbbl_api.py   - HTTP client: /api/match, /api/team, /api/replay/.../gz
   events.py       - parse gameLog.commandArray -> typed event timeline + in-game roster
   analyzer.py     - score pivotal plays; fall back to summary totals if no events
+  field_state.py  - reconstruct player + ball positions at any commandNr
+  tableau.py      - render a single pivotal play to PNG (spike: pitch + tokens)
+  animate.py      - render an animated GIF of a play's run-up
+scripts/
+  build_overview.py - regenerate docs/overview.html
 ```
 
 ## Roadmap
@@ -90,8 +110,12 @@ fumbbl_replay/
 | Fetch the gzipped replay over HTTP                                       | done   |
 | Parse server commands into a typed event timeline                       | done   |
 | Pivotal plays with player names + half + turn                            | done   |
+| Context-aware scoring (game-winning, tying, comeback, foul tags)        | done   |
+| Casualty inflicter + reason (blocked / fouled / crowd-pushed)            | done   |
 | Match summary fallback analyzer                                          | done   |
-| Render stylized pixel-art tableaux per play                              | todo   |
+| Pixel-art tableau spike (pitch + tokens at saved coords)                 | done   |
+| Animated GIFs of pivotal plays                                            | done   |
+| Pixel-art tableau visual identity (sprites, art direction)               | todo   |
 | LLM commentary script + TTS narration                                    | todo   |
 | ffmpeg compose final mp4                                                 | todo   |
 

@@ -27,7 +27,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import analyzer, events, fumbbl_api, jnlp_loader
+from . import analyzer, events, field_state, fumbbl_api, jnlp_loader
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,6 +40,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Skip the per-team roster fetch (omits player names from headlines)")
     parser.add_argument("--dump-replay", type=Path, default=None,
                         help="Save the raw replay JSON (gzipped) to this path")
+    parser.add_argument("--tableaux", type=Path, default=None,
+                        help="Render a PNG tableau per pivotal play into this directory")
+    parser.add_argument("--gifs", type=Path, default=None,
+                        help="Render an animated GIF per pivotal play into this directory")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -61,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
 
     event_list = None
     player_lookup = None
+    replay = None
     if not args.no_replay:
         replay_id = fumbbl_api.resolve_replay_id(match_id, summary)
         replay = fumbbl_api.fetch_replay(replay_id)
@@ -83,6 +88,47 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(dataclasses.asdict(analysis), indent=2))
     else:
         print(analyzer.format_report(analysis))
+
+    if (args.tableaux or args.gifs) and replay is None:
+        log.warning("--tableaux/--gifs require the replay event log; skipping (--no-replay was set)")
+        return 0
+
+    if args.tableaux:
+        from . import tableau  # local import: pillow only loaded when needed
+        n = 0
+        # TDs: stop before the post-score cleanup that sweeps players
+        # to the dugout (cleanup happens after the score event in the
+        # same command).
+        # Casualties: the victim is removed from the pitch BEFORE
+        # the casualty trigger fires within the same command, so
+        # snapshot the previous command instead.
+        for i, p in enumerate(analysis.pivotal, 1):
+            if p.command_nr is None:
+                continue
+            if p.kind == "touchdown":
+                state = field_state.reconstruct_at(
+                    replay, p.command_nr, stop_at={"teamResultSetScore"},
+                )
+            elif p.kind == "casualty":
+                state = field_state.reconstruct_at(replay, p.command_nr - 1)
+            else:
+                state = field_state.reconstruct_at(replay, p.command_nr)
+            out = args.tableaux / f"{i:02d}_{p.kind}_{p.command_nr}.png"
+            tableau.render_tableau(p, state, player_lookup or {}, out)
+            n += 1
+        log.info("rendered %d tableaux to %s", n, args.tableaux)
+
+    if args.gifs:
+        from . import animate
+        n = 0
+        for i, p in enumerate(analysis.pivotal, 1):
+            if p.command_nr is None:
+                continue
+            out = args.gifs / f"{i:02d}_{p.kind}_{p.command_nr}.gif"
+            animate.render_play_gif(replay, p, player_lookup or {}, out)
+            n += 1
+        log.info("rendered %d gifs to %s", n, args.gifs)
+
     return 0
 
 
