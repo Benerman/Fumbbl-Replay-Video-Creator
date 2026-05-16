@@ -121,16 +121,18 @@ def extract_sprite(sheet: Image.Image, *, side: str, row: int, moving: bool = Fa
 def build_player_sprites(
     player_lookup: dict[str, PlayerInfo],
     position_icon_index: dict[str, int],
-) -> dict[str, Image.Image]:
-    """Return {playerId -> sprite Image} for every player whose position
-    we can resolve to an icon sheet. Players without a usable sprite are
-    omitted; the renderer falls back to its colour-circle drawing.
+) -> dict[str, dict[str, Image.Image]]:
+    """Return {playerId -> {"still": Image, "moving": Image}} for every
+    player whose position we can resolve to an icon sheet. The renderer
+    picks the right pose at draw time based on the player's state.
+    Players without a usable sprite are omitted; the renderer falls
+    back to its colour-circle drawing.
 
-    `position_icon_index` is the per-player `positionIconIndex` from the
-    in-game roster (events.roster_from_replay doesn't carry it; pass it
-    in from the caller).
+    `position_icon_index` is the per-player `positionIconIndex` from
+    the in-game roster (events.roster_from_replay doesn't carry it;
+    pass it in from the caller).
     """
-    out: dict[str, Image.Image] = {}
+    out: dict[str, dict[str, Image.Image]] = {}
     sheet_cache: dict[int, Image.Image] = {}
     pos_cache: dict[str, PositionInfo] = {}
 
@@ -142,7 +144,7 @@ def build_player_sprites(
         if pos is None:
             try:
                 pos = fetch_position(pos_id)
-            except Exception as e:  # network / 404 / unknown position
+            except Exception as e:
                 log.warning("could not fetch position %s: %s", pos_id, e)
                 pos_cache[pos_id] = PositionInfo(id=pos_id, name="", icon_image_id=None, icon_letter=None)
                 continue
@@ -159,7 +161,10 @@ def build_player_sprites(
             sheet_cache[pos.icon_image_id] = sheet
 
         row = position_icon_index.get(pid, 0)
-        out[pid] = extract_sprite(sheet, side=info.side, row=row, moving=False)
+        out[pid] = {
+            "still":  extract_sprite(sheet, side=info.side, row=row, moving=False),
+            "moving": extract_sprite(sheet, side=info.side, row=row, moving=True),
+        }
     return out
 
 

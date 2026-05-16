@@ -180,28 +180,39 @@ def _draw_players(
     lay: Layout,
     state: FieldState,
     player_lookup: dict[str, PlayerInfo],
-    sprites: dict[str, Image.Image],
+    sprites: dict[str, dict[str, Image.Image]],
     targets: "TableauTargets",
     tiny, small,
 ) -> None:
     involved = targets.involved()
+    # Drawing the disc as a faint overlay is best done on an RGBA copy
+    # we composite at the end of each player, since ImageDraw's `fill`
+    # with alpha goes opaque on RGB-backed canvases.
     for pid, (x, y) in state.on_pitch().items():
         info = player_lookup.get(pid)
         side = info.side if info else "home"
         color = HOME_COLOR if side == "home" else AWAY_COLOR
         cx, cy = lay.bb_to_screen(x, y)
         r = TILE // 2 - 3
-        sprite = sprites.get(pid)
-        base_state = (state.player_states.get(pid, 0) or 0) & 0xF
+        sprite_pair = sprites.get(pid)
+        raw_state = state.player_states.get(pid, 0) or 0
+        base_state = raw_state & 0xF
+        is_active = bool(raw_state & 0x100)
+        is_moving = base_state == _STATE_MOVING or is_active
         is_prone = base_state in _PRONE_STATES
         is_stunned = base_state == _STATE_STUNNED
         is_dead = base_state in (_STATE_KO, _STATE_BH, _STATE_SI, _STATE_RIP)
+
         if pid in involved:
-            ring_r = r + (5 if sprite else 4)
+            ring_r = r + (5 if sprite_pair else 4)
             draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], fill=HIGHLIGHT)
-        if sprite:
-            disc_r = r + 1
-            draw.ellipse([cx - disc_r, cy - disc_r, cx + disc_r, cy + disc_r], fill=color + (255,))
+
+        # Faint team-colour disc: low alpha so it doesn't dominate the sprite.
+        disc_r = r + 1
+        _faint_disc(img, cx, cy, disc_r, color, alpha=70)
+
+        if sprite_pair:
+            sprite = sprite_pair["moving" if is_moving and not is_prone and not is_stunned else "still"]
             sw, sh = sprite.size
             scale = (TILE - 4) / max(sw, sh)
             sprite_resized = sprite.resize((max(1, int(sw * scale)), max(1, int(sh * scale))),
@@ -230,6 +241,14 @@ def _draw_players(
                 _draw_prone_slash(draw, cx, cy, r)
             elif is_stunned:
                 _draw_stun_x(draw, cx, cy, r)
+
+
+def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
+                color: tuple[int, int, int], alpha: int) -> None:
+    """Paint a translucent team-coloured disc onto the RGBA canvas at (cx, cy)."""
+    overlay = Image.new("RGBA", (r * 2 + 2, r * 2 + 2), (0, 0, 0, 0))
+    ImageDraw.Draw(overlay).ellipse([0, 0, r * 2, r * 2], fill=color + (alpha,))
+    img.alpha_composite(overlay, (cx - r, cy - r))
 
 
 def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> None:
