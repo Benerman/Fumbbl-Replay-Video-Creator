@@ -25,6 +25,21 @@ from .field_state import FieldState, PITCH_WIDTH, PITCH_HEIGHT
 
 # Tile size in pixels per pitch square.
 TILE = 28
+
+# Player-state base values (low 4 bits of the bitmask FFB stores).
+_STATE_STANDING = 1
+_STATE_MOVING = 2
+_STATE_PRONE = 3
+_STATE_STUNNED = 4
+_STATE_KO = 5
+_STATE_BH = 6
+_STATE_SI = 7
+_STATE_RIP = 8
+_STATE_BLOCKED = 11
+_STATE_FALLING = 12
+_STATE_HIT_GROUND = 13
+_DOWN_STATES = {_STATE_PRONE, _STATE_STUNNED, _STATE_KO, _STATE_BH, _STATE_SI, _STATE_RIP,
+                _STATE_BLOCKED, _STATE_FALLING, _STATE_HIT_GROUND}
 # Margins around the pitch.
 MARGIN_X = 20
 MARGIN_TOP = 50
@@ -99,6 +114,12 @@ def render_tableau(
         cy = MARGIN_TOP + y * TILE + TILE // 2
         r = TILE // 2 - 3
         sprite = sprites.get(pid)
+        # Down-state visualisation: low 4 bits of player_states encode the base state.
+        # 3=PRONE 4=STUNNED 5=KO 6=BH 7=SI 8=RIP 11=BLOCKED 12=FALLING 13=HIT_ON_GROUND.
+        # Anything other than 1/2 (STANDING/MOVING) gets rendered as down.
+        base_state = (state.player_states.get(pid, 0) or 0) & 0xF
+        is_down = base_state in _DOWN_STATES
+        is_stunned = base_state == _STATE_STUNNED
         if pid in involved:
             ring_r = r + (5 if sprite else 4)
             draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], fill=HIGHLIGHT)
@@ -113,8 +134,16 @@ def render_tableau(
                                                 resample=Image.NEAREST)
             else:
                 sprite_resized = sprite
+            if is_down:
+                sprite_resized = sprite_resized.rotate(-90, expand=True, resample=Image.NEAREST)
+                # Dim a knocked-out figure so it reads "off the action".
+                if base_state in (_STATE_STUNNED, _STATE_KO, _STATE_BH, _STATE_SI, _STATE_RIP):
+                    sprite_resized = _dim(sprite_resized)
             sw, sh = sprite_resized.size
             img.paste(sprite_resized, (cx - sw // 2, cy - sh // 2), sprite_resized)
+            if is_stunned:
+                # Yellow asterisk above the head for "stunned" — distinct from plain prone.
+                _draw_stun_marker(draw, cx, cy - r, font)
             # Tiny jersey number badge in the bottom-right corner.
             if info and info.number is not None:
                 label = str(info.number)
@@ -128,6 +157,12 @@ def render_tableau(
                 label = str(info.number)
                 tw, th = _text_size(draw, label, small)
                 draw.text((cx - tw / 2, cy - th / 2), label, fill=(255, 255, 255), font=small)
+            if is_down:
+                # Without a sprite we draw a pale horizontal bar across the disc to
+                # convey "down".
+                draw.line([cx - r, cy, cx + r, cy], fill=(20, 20, 20), width=2)
+            if is_stunned:
+                _draw_stun_marker(draw, cx, cy - r, font)
 
     # Caption: the play headline.
     caption = play.headline()
@@ -187,6 +222,24 @@ def _header_text(p: PivotalPlay) -> str:
     if p.turn:
         bits.append(f"  turn {p.turn}")
     return " ".join(bits)
+
+
+def _dim(im: Image.Image) -> Image.Image:
+    """Knock the brightness down on a sprite to mark it as out-of-action."""
+    out = im.copy()
+    if out.mode != "RGBA":
+        out = out.convert("RGBA")
+    pixels = out.load()
+    for j in range(out.size[1]):
+        for i in range(out.size[0]):
+            r, g, b, a = pixels[i, j]
+            pixels[i, j] = (r * 6 // 10, g * 6 // 10, b * 6 // 10, a)
+    return out
+
+
+def _draw_stun_marker(draw: ImageDraw.ImageDraw, cx: int, cy: int, font) -> None:
+    """Yellow asterisk just above the player's head — universal "stunned"."""
+    draw.text((cx - 4, cy - 12), "*", fill=HIGHLIGHT, font=font)
 
 
 def _font(size: int) -> ImageFont.ImageFont:
