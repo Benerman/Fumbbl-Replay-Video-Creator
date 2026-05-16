@@ -33,7 +33,7 @@ from .analyzer import MatchAnalysis
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BACKEND = "ollama"
+DEFAULT_BACKEND = "template"           # no AI, no install, deterministic
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
@@ -91,9 +91,15 @@ def generate_commentary(
 
     backend = backend or os.environ.get("FUMBBL_COMMENTARY_BACKEND", DEFAULT_BACKEND)
     model = model or os.environ.get("FUMBBL_COMMENTARY_MODEL")
-    user_prompt = _build_user_prompt(analysis)
 
     log.info("requesting commentary for %d pivotal plays via %s", len(analysis.pivotal), backend)
+    if backend == "template":
+        # Fully local, no install, no network. Deterministic templates
+        # filled from the structured pivotal-play data.
+        from .commentary_templates import render_template_lines
+        return render_template_lines(analysis)
+
+    user_prompt = _build_user_prompt(analysis)
     if backend == "ollama":
         text = _call_ollama(user_prompt, model or DEFAULT_OLLAMA_MODEL,
                              base_url or os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_URL))
@@ -104,7 +110,7 @@ def generate_commentary(
     elif backend == "claude":
         text = _call_claude(user_prompt, model or DEFAULT_CLAUDE_MODEL)
     else:
-        raise ValueError(f"unknown commentary backend {backend!r}; choose ollama|openai|claude")
+        raise ValueError(f"unknown commentary backend {backend!r}; choose template|ollama|openai|claude")
 
     parsed = _parse_lines(text)
     return {item["play_index"]: item["line"] for item in parsed if "play_index" in item and "line" in item}
