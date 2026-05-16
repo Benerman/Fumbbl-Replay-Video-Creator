@@ -27,26 +27,50 @@ log = logging.getLogger(__name__)
 
 # Mix offsets / volumes (ms / linear gain).
 SFX_THUD_DELAY_MS = 0
-SFX_CROWD_DELAY_MS = 700
-TTS_DELAY_MS = 400
+SFX_CROWD_DELAY_MS = 500
+# Give the SFX a proper beat to land before the commentary starts.
+TTS_PRIMARY_DELAY_MS = 1800
+# Gap between play-by-play and colour-commentator reaction.
+TTS_BANTER_GAP_MS = 350
 SFX_THUD_VOLUME = 0.85
 SFX_CROWD_VOLUME = 0.55
 TTS_VOLUME = 1.0
 # After the last input ends, pad the mix with a touch of silence so
 # the crowd doesn't clip mid-cheer in some encoders.
-TAIL_PAD_MS = 250
+TAIL_PAD_MS = 400
+
+
+def _audio_duration_ms(path: Path) -> int:
+    """Return clip duration in milliseconds via ffprobe; 0 on failure."""
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+        seconds = float(proc.stdout.strip())
+        return int(seconds * 1000)
+    except Exception:
+        return 0
 
 
 def mix_play_audio(
     tts_path: Path | None,
     sfx_paths: Iterable[Path],
     out_path: Path,
+    *,
+    tts_banter_path: Path | None = None,
 ) -> Path | None:
-    """Mix one play's TTS narration over its SFX into a single mp3.
+    """Mix one play's audio into a single mp3.
+
+    Layers (start times relative to t=0):
+      - SFX 1 (on-field thud) at 0ms
+      - SFX 2 (crowd bed) at ~500ms
+      - TTS primary (play-by-play) at ~1800ms — well after SFX has landed
+      - TTS banter (colour commentator) at primary_end + ~350ms gap
 
     Returns the output Path, or None if ffmpeg is missing or all
-    inputs are empty. If only one source is supplied we still run
-    ffmpeg so the output is always a normalised mp3.
+    inputs are empty.
     """
     if not shutil.which("ffmpeg"):
         log.warning("ffmpeg not found on PATH; cannot mix audio")
@@ -58,7 +82,11 @@ def mix_play_audio(
     if len(sfx_list) > 1:
         inputs.append((sfx_list[1], SFX_CROWD_VOLUME, SFX_CROWD_DELAY_MS))
     if tts_path and tts_path.exists():
-        inputs.append((tts_path, TTS_VOLUME, TTS_DELAY_MS))
+        inputs.append((tts_path, TTS_VOLUME, TTS_PRIMARY_DELAY_MS))
+    if tts_banter_path and tts_banter_path.exists():
+        primary_dur = _audio_duration_ms(tts_path) if tts_path else 0
+        banter_delay = TTS_PRIMARY_DELAY_MS + primary_dur + TTS_BANTER_GAP_MS
+        inputs.append((tts_banter_path, TTS_VOLUME, banter_delay))
     if not inputs:
         log.warning("no inputs to mix for %s", out_path.name)
         return None
@@ -99,12 +127,13 @@ def mix_match_audio(
     sfx_by_play: dict[int, list[Path]],
     kinds_by_play: dict[int, str],
     output_dir: Path,
+    *,
+    banter_by_play: dict[int, Path] | None = None,
 ) -> dict[int, Path]:
     """Mix the entire match's per-play audio. Returns {play_index -> mp3 Path}."""
     output_dir.mkdir(parents=True, exist_ok=True)
     out: dict[int, Path] = {}
-    # Iterate the union of play indices that have either TTS or SFX
-    # since we still want a clip when only one source exists.
+    banter_by_play = banter_by_play or {}
     all_indices = sorted(set(tts_by_play) | set(sfx_by_play))
     for idx in all_indices:
         kind = kinds_by_play.get(idx, "play")
@@ -113,6 +142,7 @@ def mix_match_audio(
             tts_path=tts_by_play.get(idx),
             sfx_paths=sfx_by_play.get(idx, []),
             out_path=path,
+            tts_banter_path=banter_by_play.get(idx),
         )
         if result:
             out[idx] = result

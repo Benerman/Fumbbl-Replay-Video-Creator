@@ -34,7 +34,8 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 DEFAULT_BACKEND = "kokoro"
-DEFAULT_KOKORO_VOICE = "am_michael"     # US male, natural sports-anchor read
+DEFAULT_KOKORO_VOICE = "am_michael"     # play-by-play (US male, sports-anchor read)
+DEFAULT_KOKORO_VOICE_B = "bm_george"    # colour commentator (UK male, gravitas)
 DEFAULT_SAY_VOICE = "Bad News"          # gravelly novelty fallback
 DEFAULT_PYTTSX3_VOICE: str | None = None  # let pyttsx3 pick
 DEFAULT_OPENAI_MODEL = "tts-1"
@@ -50,12 +51,17 @@ def generate_audio(
     voice: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
+    filename_suffix: str = "",
 ) -> dict[int, Path]:
     """Render one audio clip per commentary line. Returns {play_index -> Path}.
 
     `pivotal_kinds` is an optional {play_index -> kind-name} so output
     files include the play kind in the filename (matches the tableaux /
     gifs naming convention).
+
+    `filename_suffix` is appended before the extension - e.g. "_b"
+    for the colour-commentator banter clips so they don't collide with
+    the primary play-by-play files.
     """
     if not commentary_lines:
         return {}
@@ -86,7 +92,7 @@ def generate_audio(
     for idx in sorted(commentary_lines):
         line = commentary_lines[idx]
         kind = pivotal_kinds.get(idx, "play")
-        filename = f"{idx:02d}_{kind}.{renderer.extension}"
+        filename = f"{idx:02d}_{kind}{filename_suffix}.{renderer.extension}"
         path = output_dir / filename
         try:
             renderer.render(line, path)

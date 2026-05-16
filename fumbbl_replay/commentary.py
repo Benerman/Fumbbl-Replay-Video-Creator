@@ -99,6 +99,17 @@ def generate_commentary(
         from .commentary_templates import render_template_lines
         return render_template_lines(analysis)
 
+
+def generate_banter(analysis: MatchAnalysis) -> dict[int, str]:
+    """Short colour-commentator reactions, one per pivotal play.
+
+    Template-only for now since the banter pool is small and tightly
+    keyed to play kind/tags."""
+    if not analysis.pivotal:
+        return {}
+    from .commentary_templates import render_banter_lines
+    return render_banter_lines(analysis)
+
     user_prompt = _build_user_prompt(analysis)
     if backend == "ollama":
         text = _call_ollama(user_prompt, model or DEFAULT_OLLAMA_MODEL,

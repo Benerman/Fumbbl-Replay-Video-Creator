@@ -69,7 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tts-backend", choices=("kokoro", "say", "pyttsx3", "openai"), default=None,
                         help="TTS backend (default: kokoro - local neural TTS; env: FUMBBL_TTS_BACKEND)")
     parser.add_argument("--tts-voice", default=None,
-                        help="Voice name for the chosen TTS backend (default per backend; env: FUMBBL_TTS_VOICE)")
+                        help="Play-by-play voice for the chosen TTS backend (default per backend; env: FUMBBL_TTS_VOICE)")
+    parser.add_argument("--tts-voice-b", default=None,
+                        help="Colour-commentator voice for the banter reaction (kokoro backend; default: bm_george)")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -152,8 +154,10 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("commentary generation failed: %s", e)
 
     tts_paths: dict[int, Path] = {}
+    banter_paths: dict[int, Path] = {}
     if want_tts_dir:
-        from . import tts
+        from . import tts, commentary as commentary_mod
+        # Primary play-by-play line per pivotal play.
         try:
             tts_paths = tts.generate_audio(
                 commentary_lines, want_tts_dir,
@@ -164,6 +168,21 @@ def main(argv: list[str] | None = None) -> int:
             log.info("rendered %d audio clips to %s", len(tts_paths), want_tts_dir)
         except Exception as e:
             log.warning("TTS generation failed: %s", e)
+        # Colour-commentator banter line per pivotal play, in a second voice.
+        try:
+            banter_lines = commentary_mod.generate_banter(analysis)
+            banter_paths = tts.generate_audio(
+                banter_lines, want_tts_dir,
+                pivotal_kinds=kinds,
+                backend=args.tts_backend,
+                voice=args.tts_voice_b or (
+                    tts.DEFAULT_KOKORO_VOICE_B if (args.tts_backend or "kokoro") == "kokoro" else None
+                ),
+                filename_suffix="_b",
+            )
+            log.info("rendered %d banter clips", len(banter_paths))
+        except Exception as e:
+            log.warning("banter TTS generation failed: %s", e)
 
     sfx_paths: dict[int, list[Path]] = {}
     if args.sounds or args.mix:
@@ -184,7 +203,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.mix:
         from . import mix as mix_mod
         try:
-            mix_paths = mix_mod.mix_match_audio(tts_paths, sfx_paths, kinds, args.mix)
+            mix_paths = mix_mod.mix_match_audio(
+                tts_paths, sfx_paths, kinds, args.mix,
+                banter_by_play=banter_paths,
+            )
             log.info("mixed %d per-play clips into %s", len(mix_paths), args.mix)
         except Exception as e:
             log.warning("audio mix failed: %s", e)

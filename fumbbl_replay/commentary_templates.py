@@ -139,6 +139,147 @@ _INTERCEPTION = [
 ]
 
 
+# ---------- banter pools (the colour commentator's short reaction) ----------
+# Voice B chips in with a one-beat reaction after Voice A's main call. Keep
+# these very short (3-8 words) so the layered audio doesn't run too long.
+
+_BANTER_TD = [
+    "Couldn't ask for more.",
+    "Make that look easy.",
+    "Right when {team} needed it.",
+    "What a finish.",
+]
+_BANTER_TD_GAME_WINNING = [
+    "And that's the game.",
+    "The dagger.",
+    "Doesn't get more dramatic than that.",
+    "Wrap it up, fellas.",
+]
+_BANTER_TD_TYING = [
+    "We've got a match again.",
+    "Game on.",
+    "Levelled it just in time.",
+]
+_BANTER_TD_COMEBACK = [
+    "{team} aren't done.",
+    "Pressure's on now.",
+    "Game's swinging.",
+]
+_BANTER_KILL_BLOCK = [
+    "Brutal.",
+    "He won't be back. Or anywhere.",
+    "Career over.",
+    "That's a wrap on him.",
+]
+_BANTER_KILL_FOUL = [
+    "Cheap shot. Cold-blooded.",
+    "Where was the ref?",
+    "Dirty.",
+]
+_BANTER_KILL_CROWD = [
+    "Fans finished the job.",
+    "Tossed and gone.",
+]
+_BANTER_SI = [
+    "Long road back.",
+    "He's done for the season.",
+    "Apothecary's not getting paid enough.",
+    "Ouch. Ouch.",
+]
+_BANTER_BH = [
+    "Stuck in the KO box for the half.",
+    "He'll feel that one tomorrow.",
+    "Lights out.",
+]
+_BANTER_DOUBLE_SKULL = [
+    "Save the dice for later.",
+    "Couldn't pick a worse moment.",
+    "Coach's hat hits the dirt.",
+    "Turn over, folks.",
+]
+_BANTER_DOUBLE_SKULL_STREAK = [
+    "Again with the dice?",
+    "Pattern's set in now.",
+    "Someone's cursed.",
+    "Hide the dice from {team}.",
+]
+_BANTER_TRIPLE_SKULL = [
+    "Wow. Just wow.",
+    "Haven't seen that in years.",
+    "Pure pain.",
+]
+_BANTER_CLUTCH_NO_WIN = [
+    "Heartbreaker.",
+    "Right at the end too.",
+    "That'll keep him up tonight.",
+]
+_BANTER_CLUTCH = [
+    "Oh no.",
+    "Slipped through his fingers.",
+]
+_BANTER_SELF_KILL = [
+    "Took himself out.",
+    "Help wasn't needed there.",
+    "Tripped over his own ambitions.",
+]
+_BANTER_INTERCEPTION = [
+    "Read like a book.",
+    "Took it right out of the air.",
+    "Coach's masterclass.",
+]
+
+
+def render_banter_lines(analysis: MatchAnalysis) -> dict[int, str]:
+    """Produce {play_index -> short colour-commentator line}.
+
+    Same play_index rotation as the primary pool so a snake-eyes
+    streak gets a different banter each time."""
+    out: dict[int, str] = {}
+    for i, p in enumerate(analysis.pivotal, 1):
+        pool = _banter_pool_for(p)
+        if not pool:
+            continue
+        template = pool[i % len(pool)]
+        out[i] = template.format(**_vars(p))
+    return out
+
+
+def _banter_pool_for(p: PivotalPlay) -> list[str]:
+    tags = p.tags or []
+    if p.kind == "touchdown":
+        if "game_winning" in tags:
+            return _BANTER_TD_GAME_WINNING
+        if "tying" in tags:
+            return _BANTER_TD_TYING
+        if "comeback" in tags:
+            return _BANTER_TD_COMEBACK
+        return _BANTER_TD
+    if p.kind == "casualty":
+        detail = (p.detail or "").lower()
+        reason = (p.reason or "").lower()
+        if detail == "rip":
+            if reason == "fouled":
+                return _BANTER_KILL_FOUL
+            if reason == "crowdpushed":
+                return _BANTER_KILL_CROWD
+            return _BANTER_KILL_BLOCK
+        if detail == "si":
+            return _BANTER_SI
+        if detail == "bh":
+            return _BANTER_BH
+    if p.kind == "triple_skull":
+        return _BANTER_TRIPLE_SKULL
+    if p.kind == "double_skull":
+        return _BANTER_DOUBLE_SKULL_STREAK if "snake_eyes_streak" in tags else _BANTER_DOUBLE_SKULL
+    if p.kind == "clutch_fail":
+        return _BANTER_CLUTCH_NO_WIN if "no_win" in tags else _BANTER_CLUTCH
+    if p.kind == "self_kill":
+        return _BANTER_SELF_KILL
+    if p.kind == "interception":
+        return _BANTER_INTERCEPTION
+    return []
+
+
 def render_template_lines(analysis: MatchAnalysis) -> dict[int, str]:
     """Produce {play_index -> commentary line} purely from the analyzer
     output. Deterministic: the same analysis always renders the same
