@@ -133,6 +133,17 @@ def main(argv: list[str] | None = None) -> int:
         player_sprites = sprites.build_player_sprites(player_lookup, idx)
         log.info("loaded sprites for %d/%d players", len(player_sprites), len(player_lookup))
 
+    # Team labels + logos for the endzones / pitch watermark.
+    home_name = analysis.home.name
+    away_name = analysis.away.name
+    home_logo_img = None
+    away_logo_img = None
+    if args.tableaux or args.gifs:
+        home_logo_id = _logo_id_from_team(team_home) or _logo_id_from_replay_team(replay, "home")
+        away_logo_id = _logo_id_from_team(team_away) or _logo_id_from_replay_team(replay, "away")
+        home_logo_img = sprites.fetch_team_logo(home_logo_id)
+        away_logo_img = sprites.fetch_team_logo(away_logo_id)
+
     if args.tableaux:
         from . import tableau  # local import: pillow only loaded when needed
         n = 0
@@ -154,7 +165,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 state = field_state.reconstruct_at(replay, p.command_nr)
             out = args.tableaux / f"{i:02d}_{p.kind}_{p.command_nr}.png"
-            tableau.render_tableau(p, state, player_lookup or {}, out, sprites=player_sprites)
+            tableau.render_tableau(
+                p, state, player_lookup or {}, out,
+                sprites=player_sprites,
+                home_name=home_name, away_name=away_name,
+                home_logo=home_logo_img, away_logo=away_logo_img,
+            )
             n += 1
         log.info("rendered %d tableaux to %s", n, args.tableaux)
 
@@ -165,9 +181,33 @@ def main(argv: list[str] | None = None) -> int:
             if p.command_nr is None:
                 continue
             out = args.gifs / f"{i:02d}_{p.kind}_{p.command_nr}.gif"
-            animate.render_play_gif(replay, p, player_lookup or {}, out, sprites=player_sprites)
+            animate.render_play_gif(
+                replay, p, player_lookup or {}, out,
+                sprites=player_sprites,
+                home_name=home_name, away_name=away_name,
+                home_logo=home_logo_img, away_logo=away_logo_img,
+            )
             n += 1
         log.info("rendered %d gifs to %s", n, args.gifs)
+
+
+def _logo_id_from_team(team: dict | None) -> int | None:
+    if not team:
+        return None
+    bio = team.get("bio") or {}
+    return bio.get("image")
+
+
+def _logo_id_from_replay_team(replay: dict, side: str) -> int | None:
+    """Fallback: pull the logo image id out of `logoUrl` in the replay's roster."""
+    team = (replay.get("game") or {}).get(f"team{side.capitalize()}") or {}
+    url = team.get("logoUrl")
+    if not url:
+        return None
+    # logoUrl is typically "i/12345"; the trailing integer is the image id.
+    import re
+    m = re.search(r"(\d+)", url)
+    return int(m.group(1)) if m else None
 
     return 0
 

@@ -41,6 +41,10 @@ def render_play_gif(
     out_path: Path,
     *,
     sprites: dict[str, Image.Image] | None = None,
+    home_name: str | None = None,
+    away_name: str | None = None,
+    home_logo: Image.Image | None = None,
+    away_logo: Image.Image | None = None,
     lookback_cmds: int = 60,
     frame_ms: int = 200,
     final_pause_ms: int = 1500,
@@ -97,7 +101,12 @@ def render_play_gif(
         is_last = i == len(interesting_cmds) - 1
         state = reconstruct_at(replay, cn, stop_at=last_stop if is_last else None)
         img_path = out_path.with_suffix(f".frame{i:03d}.png")
-        render_tableau(play, state, player_lookup, img_path, sprites=sprites)
+        render_tableau(
+            play, state, player_lookup, img_path,
+            sprites=sprites,
+            home_name=home_name, away_name=away_name,
+            home_logo=home_logo, away_logo=away_logo,
+        )
         frames.append(Image.open(img_path).convert("P", palette=Image.ADAPTIVE))
         img_path.unlink()  # keep only the GIF
 

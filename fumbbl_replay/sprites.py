@@ -70,7 +70,22 @@ def fetch_position(position_id: str) -> PositionInfo:
 
 def fetch_icon_sheet(image_id: int) -> Image.Image:
     """Fetch a position icon sheet, cached on disk."""
-    cache_path = CACHE_DIR / "icons" / f"{image_id}.png"
+    return _fetch_image(image_id, "icons")
+
+
+def fetch_team_logo(image_id: int | None) -> Image.Image | None:
+    """Fetch a team logo image, cached on disk. Returns None for missing logos."""
+    if not image_id:
+        return None
+    try:
+        return _fetch_image(int(image_id), "logos")
+    except Exception as e:
+        log.warning("could not fetch team logo %s: %s", image_id, e)
+        return None
+
+
+def _fetch_image(image_id: int, subdir: str) -> Image.Image:
+    cache_path = CACHE_DIR / subdir / f"{image_id}.png"
     if not cache_path.exists():
         url = f"https://fumbbl.com/i/{image_id}"
         log.info("GET %s", url)
