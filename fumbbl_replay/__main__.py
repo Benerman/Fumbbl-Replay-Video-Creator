@@ -71,7 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tts-voice", default=None,
                         help="Play-by-play voice for the chosen TTS backend (default per backend; env: FUMBBL_TTS_VOICE)")
     parser.add_argument("--tts-voice-b", default=None,
-                        help="Colour-commentator voice for the banter reaction (kokoro backend; default: bm_george)")
+                        help="Colour-commentator voice for the banter reaction (kokoro backend; default: auto-paired)")
+    parser.add_argument("--tts-meme", action="store_true",
+                        help="Use af_nicole (ASMR-style) as the play-by-play voice — comedy mode")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -157,13 +159,24 @@ def main(argv: list[str] | None = None) -> int:
     banter_paths: dict[int, Path] = {}
     if want_tts_dir:
         from . import tts, commentary as commentary_mod
+
+        # Auto-pair voices when neither is given and we're on Kokoro.
+        # Seed by match id so a given match gets a stable booth across
+        # reruns. --tts-meme swaps voice A for the ASMR-style nicole.
+        voice_a, voice_b = args.tts_voice, args.tts_voice_b
+        if (args.tts_backend or tts.DEFAULT_BACKEND) == "kokoro" and not voice_a and not voice_b:
+            seed = ref.match_id or ref.replay_id or 0
+            voice_a, voice_b = tts.pick_voice_pair(seed, meme=args.tts_meme)
+            log.info("auto-paired voices for match %s: A=%s B=%s",
+                     seed, voice_a, voice_b)
+
         # Primary play-by-play line per pivotal play.
         try:
             tts_paths = tts.generate_audio(
                 commentary_lines, want_tts_dir,
                 pivotal_kinds=kinds,
                 backend=args.tts_backend,
-                voice=args.tts_voice,
+                voice=voice_a,
             )
             log.info("rendered %d audio clips to %s", len(tts_paths), want_tts_dir)
         except Exception as e:
@@ -175,9 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                 banter_lines, want_tts_dir,
                 pivotal_kinds=kinds,
                 backend=args.tts_backend,
-                voice=args.tts_voice_b or (
-                    tts.DEFAULT_KOKORO_VOICE_B if (args.tts_backend or "kokoro") == "kokoro" else None
-                ),
+                voice=voice_b,
                 filename_suffix="_b",
             )
             log.info("rendered %d banter clips", len(banter_paths))

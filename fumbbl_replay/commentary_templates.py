@@ -32,110 +32,110 @@ from .analyzer import MatchAnalysis, PivotalPlay
 # different openers.
 
 _TD_GAME_WINNING = [
-    "{scorer} crashes over for the game-winner — that's the dagger!",
-    "{scorer} punches it in to break the deadlock; {team} take the lead and don't give it back.",
-    "Game over — {scorer} dives over the line and {team} have the win.",
-    "{scorer} carries it across for {team} — the decisive score.",
+    "{scorer} crashes over for the game-winner. That's the dagger!",
+    "{scorer} punches it in to break the deadlock. {team} take the lead, and they're not giving it back.",
+    "Game over. {scorer} dives over the line, and {team} have the win.",
+    "{scorer} carries it across for {team}. The decisive score.",
 ]
 _TD_TYING = [
-    "{scorer} levels it with a clutch dive into the endzone.",
-    "Drama! {scorer} ties it up for {team} — back to square one.",
-    "{scorer} drags {team} back into it with a stretch over the line.",
-    "All square again — {scorer} crashes through to equalise.",
+    "{scorer} levels it, with a clutch dive into the endzone.",
+    "Drama! {scorer} ties it up for {team}. Back to square one.",
+    "{scorer} drags {team} back into it, with a stretch over the line.",
+    "All square again. {scorer} crashes through to equalise.",
 ]
 _TD_COMEBACK = [
-    "{scorer} answers back for {team} — game's still on.",
-    "{scorer} cuts the deficit, {team} are stirring.",
+    "{scorer} answers back for {team}. The game is still on.",
+    "{scorer} cuts the deficit. {team} are stirring.",
     "Big response from {team}: {scorer} barrels in for the score.",
-    "{scorer} powers through, {team} aren't done yet.",
+    "{scorer} powers through. {team} are not done yet.",
 ]
 _TD_REGULAR = [
     "{scorer} romps in for {team}.",
-    "Six points for {team} as {scorer} crosses the line.",
-    "{scorer} skips through the line and slides over for the score.",
-    "{scorer} grabs paydirt; {team} are on the board.",
-    "{scorer} strolls in — easy as you like for {team}.",
+    "Six points for {team}, as {scorer} crosses the line.",
+    "{scorer} skips through the line, and slides over for the score.",
+    "{scorer} grabs paydirt. {team} are on the board.",
+    "{scorer} strolls in. Easy, as you like, for {team}.",
 ]
 
 _KILL_BLOCK = [
-    "{inflicter} sends {victim} off in a stretcher — that one's not getting back up.",
-    "Lights out for {victim}; {inflicter} wasn't here to make friends.",
-    "{victim} is DEAD — {inflicter} finishes the job in the mud.",
-    "{inflicter} flattens {victim} for good — {team} are a player short for the season.",
-    "{inflicter} cracks {victim} into the next life; the apothecary just shrugs.",
+    "{inflicter} sends {victim} off in a stretcher. That one is not getting back up.",
+    "Lights out for {victim}. {inflicter} was not here to make friends.",
+    "{victim} is dead. {inflicter} finishes the job, in the mud.",
+    "{inflicter} flattens {victim} for good. {team} are a player short for the season.",
+    "{inflicter} cracks {victim} into the next life. The apothecary just shrugs.",
 ]
 _KILL_FOUL = [
-    "Sneaky boot from {inflicter} — {victim} is dead, and definitely intentional.",
-    "{inflicter} stomps on {victim} when the ref isn't looking — that's a kill.",
-    "Dirty work from {inflicter}: {victim} won't be back, in this game or ever.",
+    "Sneaky boot from {inflicter}. {victim} is dead, and definitely on purpose.",
+    "{inflicter} stomps on {victim} when the ref isn't looking. That's a kill.",
+    "Dirty work from {inflicter}. {victim} will not be back, in this game or ever.",
 ]
 _KILL_CROWD = [
-    "{victim} surfs off the pitch and the crowd finishes the job — that's a kill.",
-    "Into the stands and never coming out — {victim} is done.",
+    "{victim} surfs off the pitch, and the crowd finishes the job. That's a kill.",
+    "Into the stands, and never coming out. {victim} is done.",
 ]
 
 _SI_BLOCK = [
-    "{inflicter} cracks {victim} hard — {injury}, ouch.",
-    "{victim} crumples; {inflicter} did the damage, {injury}.",
-    "{inflicter} puts {victim} on the shelf — {injury}.",
-    "{victim} won't be the same after that one — {inflicter} delivered {injury}.",
+    "{inflicter} cracks {victim} hard. {injury}. Ouch.",
+    "{victim} crumples. {inflicter} did the damage. {injury}.",
+    "{inflicter} puts {victim} on the shelf. {injury}.",
+    "{victim} will not be the same after that one. {inflicter} delivered {injury}.",
 ]
 _SI_FOUL = [
-    "Boot to the head from {inflicter} — {victim} takes {injury}, no one saw a thing.",
-    "{inflicter} fouls {victim} into the bench — {injury}, season's done.",
+    "Boot to the head from {inflicter}. {victim} takes {injury}. No one saw a thing.",
+    "{inflicter} fouls {victim} into the bench. {injury}. Season is done.",
 ]
 _SI_CROWD = [
-    "{victim} hits the rail hard, {injury} — the fans are not gentle.",
-    "Tossed into the crowd; {victim} comes back with {injury}.",
+    "{victim} hits the rail hard. {injury}. The fans are not gentle.",
+    "Tossed into the crowd. {victim} comes back with {injury}.",
 ]
 
 _BH_BLOCK = [
-    "{inflicter} flattens {victim} — out cold for the half.",
-    "{victim} eats canvas; {inflicter} put the lights out.",
-    "{inflicter} sits {victim} down — KO box for that one.",
-    "{victim} goes down hard, {inflicter} stands over him.",
+    "{inflicter} flattens {victim}. Out cold for the half.",
+    "{victim} eats canvas. {inflicter} put the lights out.",
+    "{inflicter} sits {victim} down. KO box for that one.",
+    "{victim} goes down hard. {inflicter} stands over him.",
 ]
 _BH_FOUL = [
-    "{inflicter} sneaks in a boot — {victim} is knocked silly.",
+    "{inflicter} sneaks in a boot. {victim} is knocked silly.",
 ]
 _BH_CROWD = [
-    "{victim} crowd-surfs into a knock-out — the fans are merciless.",
+    "{victim} crowd-surfs into a knock-out. The fans are merciless.",
 ]
 
 _DOUBLE_SKULL = [
     "{actor} swings, rolls double skulls, and faceplants in front of everyone.",
-    "Disaster for {team}: {actor} rolls a double skull and the turn ends right there.",
-    "{actor} commits to the block — and immediately commits to the floor. Turn over.",
-    "Two skulls for {actor} — that's the kind of roll coaches scream at.",
+    "Disaster for {team}. {actor} rolls a double skull, and the turn ends right there.",
+    "{actor} commits to the block. And immediately commits to the floor. Turn over.",
+    "Two skulls for {actor}. That is the kind of roll coaches scream at.",
 ]
 _DOUBLE_SKULL_STREAK = [
-    "{actor} double-skulls AGAIN — {team} just can't catch a break with the dice.",
-    "Yet ANOTHER double skull for {team} — {actor} adds to the snake-eyes pile.",
-    "{actor} rolls double skulls, because of course they did — what a day for {team}.",
+    "{actor} double-skulls again. {team} just can not catch a break with the dice.",
+    "Yet another double skull for {team}. {actor} adds to the snake-eyes pile.",
+    "{actor} rolls double skulls. Because of course they did. What a day for {team}.",
 ]
 _TRIPLE_SKULL = [
-    "TRIPLE skulls?! {actor} has done absolutely nothing useful — turn over.",
-    "Three skulls for {actor} — the kind of roll that ends turns and reputations.",
+    "Triple skulls! {actor} has done absolutely nothing useful. Turn over.",
+    "Three skulls for {actor}. The kind of roll that ends turns. And reputations.",
     "Triple skulls. {actor} stares at the dice. The dice stare back.",
 ]
 _CLUTCH_FAIL_NO_WIN = [
-    "{actor} fumbles the pickup with everything on the line — game slips away for {team}.",
-    "Pickup goes wrong for {actor} in the dying turns; {team} won't be celebrating tonight.",
-    "Heartbreak: {actor} drops it near the endzone and the chance is gone.",
+    "{actor} fumbles the pickup with everything on the line. Game slips away for {team}.",
+    "Pickup goes wrong for {actor} in the dying turns. {team} will not be celebrating tonight.",
+    "Heartbreak. {actor} drops it near the endzone, and the chance is gone.",
 ]
 _CLUTCH_FAIL = [
-    "{actor} fumbles the pickup near the endzone — that one stings.",
-    "{actor} drops the ball with the line in sight; coach's hat hits the dirt.",
+    "{actor} fumbles the pickup near the endzone. That one stings.",
+    "{actor} drops the ball with the line in sight. Coach's hat hits the dirt.",
 ]
 _SELF_KILL = [
-    "{actor} trips over their own feet and never gets up — what a way to go.",
-    "{actor} self-destructs going for it; the pitch ate one without anyone touching them.",
-    "Solo cas for {actor}: rolled a 1, broke armour, broke for good.",
+    "{actor} trips over their own feet, and never gets up. What a way to go.",
+    "{actor} self-destructs going for it. The pitch ate one, without anyone touching them.",
+    "Solo cas for {actor}. Rolled a 1. Broke armour. Broke for good.",
 ]
 _INTERCEPTION = [
-    "{actor} plucks the ball out of the air — that's the takeaway.",
-    "Pick! {actor} reads the throw and snatches it for {team}.",
-    "{actor} steps in front of the pass — turnover, just like that.",
+    "{actor} plucks the ball out of the air. That is the takeaway.",
+    "Pick! {actor} reads the throw, and snatches it for {team}.",
+    "{actor} steps in front of the pass. Turnover. Just like that.",
 ]
 
 

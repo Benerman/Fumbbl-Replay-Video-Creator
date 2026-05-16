@@ -34,10 +34,51 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 DEFAULT_BACKEND = "kokoro"
-DEFAULT_KOKORO_VOICE = "am_michael"     # play-by-play (US male, sports-anchor read)
-DEFAULT_KOKORO_VOICE_B = "bm_george"    # colour commentator (UK male, gravitas)
-DEFAULT_SAY_VOICE = "Bad News"          # gravelly novelty fallback
+
+# Curated Kokoro voice pool for the broadcast booth. Each match picks
+# two distinct voices from this pool deterministically (seeded by the
+# match id), weighted so the user's favourites land more often. Override
+# with --tts-voice / --tts-voice-b to force a specific pair.
+KOKORO_POOL_WEIGHTS: dict[str, int] = {
+    "am_santa":  3,   # warm US male — picked most often
+    "bm_lewis":  3,   # gravelly UK male — picked most often
+    "am_liam":   1,
+    "am_onyx":   1,
+    "bm_george": 1,
+}
+# Meme mode: voice A becomes af_nicole's near-ASMR delivery (silly
+# pairing with any of the booth guys). Opt-in via --tts-meme.
+KOKORO_MEME_VOICE = "af_nicole"
+
+# Single-voice fallback defaults (used when only one voice is needed
+# or the auto-pair logic is bypassed).
+DEFAULT_KOKORO_VOICE = "am_santa"
+DEFAULT_KOKORO_VOICE_B = "bm_lewis"
+DEFAULT_SAY_VOICE = "Bad News"
 DEFAULT_PYTTSX3_VOICE: str | None = None  # let pyttsx3 pick
+
+
+def pick_voice_pair(seed: int, *, meme: bool = False) -> tuple[str, str]:
+    """Deterministically pick (voice_a, voice_b) from the curated pool.
+
+    Same `seed` always returns the same pair, so a given match has a
+    stable booth across reruns. With `meme=True`, voice_a is forced to
+    the meme voice and voice_b is drawn from the curated pool.
+    """
+    import random
+    rng = random.Random(seed)
+    pool = list(KOKORO_POOL_WEIGHTS.items())
+    if meme:
+        voice_a = KOKORO_MEME_VOICE
+    else:
+        voice_a = rng.choices([v for v, _ in pool], weights=[w for _, w in pool], k=1)[0]
+    remaining = [(v, w) for v, w in pool if v != voice_a]
+    voice_b = rng.choices(
+        [v for v, _ in remaining],
+        weights=[w for _, w in remaining],
+        k=1,
+    )[0]
+    return voice_a, voice_b
 DEFAULT_OPENAI_MODEL = "tts-1"
 DEFAULT_OPENAI_VOICE = "alloy"
 
