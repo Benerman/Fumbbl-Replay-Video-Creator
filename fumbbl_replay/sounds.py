@@ -37,33 +37,77 @@ _CACHE_DIR = Path(os.environ.get(
     str(Path.home() / ".cache" / "fumbbl-replay-video-creator")
 )) / "sounds"
 
-# Play kind -> ordered list of sound filenames. The first is the
-# on-field SFX (block thud / cheer / pick-up fail), the second (when
-# present) is the spectator-bed reaction. Both fire on the same beat.
-_SOUND_MAP: dict[str, list[str]] = {
-    "touchdown":    ["td.ogg", "specCheer.ogg"],
-    # Casualty is a single kind; we differentiate by the play.detail
-    # (RIP / SI / BH) at lookup time.
-    "self_kill":    ["fall.ogg", "specShock.ogg"],
-    "interception": ["yoink.ogg", "specCheer.ogg"],
-    "double_skull": ["block.ogg", "specBoo.ogg"],
-    "triple_skull": ["block.ogg", "specShock.ogg"],
-    "clutch_fail":  ["pickup.ogg", "specOoh.ogg"],
-}
+# Each play resolves to (on-field SFX, crowd-bed SFX). We pick the
+# crowd bed from a SET of candidates and rotate by play index so a
+# match doesn't sound like one looped reaction.
 
-# Casualty severity -> sounds.
-_CASUALTY_SOUNDS: dict[str, list[str]] = {
-    "RIP": ["rip.ogg", "specHurt.ogg"],
-    "SI":  ["injury.ogg", "specHurt.ogg"],
-    "BH":  ["ko.ogg", "specOoh.ogg"],
-}
+# Crowd beds by mood. specStomp lands hard on fouls and big hits;
+# specCheer / specClap on positive scoring beats; specHurt / specOoh
+# on injuries; specBoo / specLaugh / specShock on blunders.
+_CROWD_TD_DEFAULT       = ["specCheer.ogg", "specClap.ogg", "specAah.ogg"]
+_CROWD_TD_DECISIVE      = ["specStomp.ogg", "specCheer.ogg"]            # game-winning / tying
+_CROWD_TD_QUIET         = ["specAah.ogg", "specClap.ogg"]                # mop-up scores
+_CROWD_KILL             = ["specStomp.ogg", "specHurt.ogg", "specShock.ogg"]
+_CROWD_KILL_FOUL        = ["specBoo.ogg", "specStomp.ogg"]               # boo the foul, stomp louder
+_CROWD_SI               = ["specHurt.ogg", "specOoh.ogg", "specStomp.ogg"]
+_CROWD_SI_FOUL          = ["specBoo.ogg", "specStomp.ogg"]
+_CROWD_BH               = ["specOoh.ogg", "specClap.ogg", "specStomp.ogg"]
+_CROWD_BH_FOUL          = ["specBoo.ogg", "specStomp.ogg"]
+_CROWD_CROWD_PUSH       = ["specStomp.ogg", "specCheer.ogg"]             # the crowd literally pushes
+_CROWD_BLUNDER          = ["specBoo.ogg", "specLaugh.ogg", "specShock.ogg"]
+_CROWD_TRIPLE_SKULL     = ["specShock.ogg", "specLaugh.ogg"]
+_CROWD_CLUTCH_NO_WIN    = ["specShock.ogg", "specBoo.ogg"]
+_CROWD_CLUTCH_REG       = ["specOoh.ogg", "specBoo.ogg"]
+_CROWD_SELF_KILL        = ["specLaugh.ogg", "specShock.ogg"]
+_CROWD_INTERCEPTION     = ["specCheer.ogg", "specStomp.ogg"]
 
 
-def sounds_for_play(play: PivotalPlay) -> list[str]:
-    """Return the FFB sound filenames most appropriate for one play."""
+def sounds_for_play(play: PivotalPlay, *, play_index: int = 0) -> list[str]:
+    """Return the FFB sound filenames most appropriate for one play.
+
+    play_index seeds a rotation across the candidate crowd beds so
+    consecutive plays of the same kind get different fan reactions.
+    """
+    on_field, crowd_pool = _resolve_sounds(play)
+    if not on_field and not crowd_pool:
+        return []
+    crowd = crowd_pool[play_index % len(crowd_pool)] if crowd_pool else None
+    return [s for s in (on_field, crowd) if s]
+
+
+def _resolve_sounds(play: PivotalPlay) -> tuple[str | None, list[str]]:
+    """Map (kind, detail, reason, tags) to (on-field SFX, crowd pool)."""
+    tags = play.tags or []
+    if play.kind == "touchdown":
+        if "game_winning" in tags or "tying" in tags:
+            return "td.ogg", _CROWD_TD_DECISIVE
+        if "comeback" in tags:
+            return "td.ogg", _CROWD_TD_DEFAULT
+        return "td.ogg", _CROWD_TD_QUIET if play.score_home is not None and abs(
+            (play.score_home or 0) - (play.score_away or 0)) >= 2 else _CROWD_TD_DEFAULT
     if play.kind == "casualty":
-        return list(_CASUALTY_SOUNDS.get(play.detail.upper(), ["injury.ogg", "specHurt.ogg"]))
-    return list(_SOUND_MAP.get(play.kind, []))
+        detail = (play.detail or "").upper()
+        reason = (play.reason or "").lower()
+        if reason == "crowdpushed":
+            on = {"RIP": "rip.ogg", "SI": "injury.ogg"}.get(detail, "ko.ogg")
+            return on, _CROWD_CROWD_PUSH
+        if detail == "RIP":
+            return "rip.ogg", _CROWD_KILL_FOUL if reason == "fouled" else _CROWD_KILL
+        if detail == "SI":
+            return "injury.ogg", _CROWD_SI_FOUL if reason == "fouled" else _CROWD_SI
+        if detail == "BH":
+            return "ko.ogg", _CROWD_BH_FOUL if reason == "fouled" else _CROWD_BH
+    if play.kind == "self_kill":
+        return "fall.ogg", _CROWD_SELF_KILL
+    if play.kind == "interception":
+        return "yoink.ogg", _CROWD_INTERCEPTION
+    if play.kind == "triple_skull":
+        return "block.ogg", _CROWD_TRIPLE_SKULL
+    if play.kind == "double_skull":
+        return "block.ogg", _CROWD_BLUNDER
+    if play.kind == "clutch_fail":
+        return "pickup.ogg", _CROWD_CLUTCH_NO_WIN if "no_win" in tags else _CROWD_CLUTCH_REG
+    return None, []
 
 
 def fetch_sound(filename: str) -> Path | None:
@@ -98,7 +142,7 @@ def install_play_sounds(
     output_dir.mkdir(parents=True, exist_ok=True)
     out: dict[int, list[Path]] = {}
     for i, play in enumerate(plays, 1):
-        files = sounds_for_play(play)
+        files = sounds_for_play(play, play_index=i)
         if not files:
             continue
         copied: list[Path] = []

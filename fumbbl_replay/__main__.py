@@ -61,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Generate per-play TTS audio into this directory (forces --commentary)")
     parser.add_argument("--sounds", type=Path, default=None,
                         help="Copy FFB game-event SFX (cheers, thuds, whistles) into this directory")
+    parser.add_argument("--mix", type=Path, default=None,
+                        help="Mix per-play TTS + SFX into a single mp3 (auto-runs --commentary/--tts/--sounds; requires ffmpeg)")
     parser.add_argument("--tts-backend", choices=("say", "pyttsx3", "openai"), default=None,
                         help="TTS backend (default: say on macOS; env: FUMBBL_TTS_BACKEND)")
     parser.add_argument("--tts-voice", default=None,
@@ -123,8 +125,16 @@ def main(argv: list[str] | None = None) -> int:
         events=event_list, player_lookup=player_lookup,
     )
 
+    # When --mix is requested we auto-derive intermediate output dirs
+    # for commentary/TTS/SFX next to the mix dir so the user doesn't
+    # have to wire up four flags by hand.
+    want_commentary = bool(args.commentary or args.tts or args.mix)
+    want_tts_dir = args.tts or (args.mix.parent / "audio" if args.mix else None)
+    want_sfx_dir = args.sounds or (args.mix.parent / "sfx" if args.mix else None)
+    kinds = {i: p.kind for i, p in enumerate(analysis.pivotal, 1)}
+
     commentary_lines: dict[int, str] = {}
-    if args.commentary or args.tts:
+    if want_commentary:
         from . import commentary
         try:
             commentary_lines = commentary.generate_commentary(
@@ -137,29 +147,38 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             log.warning("commentary generation failed: %s", e)
 
-    if args.tts:
+    tts_paths: dict[int, Path] = {}
+    if want_tts_dir:
         from . import tts
-        kinds = {i: p.kind for i, p in enumerate(analysis.pivotal, 1)}
         try:
-            audio_paths = tts.generate_audio(
-                commentary_lines, args.tts,
+            tts_paths = tts.generate_audio(
+                commentary_lines, want_tts_dir,
                 pivotal_kinds=kinds,
                 backend=args.tts_backend,
                 voice=args.tts_voice,
             )
-            log.info("rendered %d audio clips to %s", len(audio_paths), args.tts)
+            log.info("rendered %d audio clips to %s", len(tts_paths), want_tts_dir)
         except Exception as e:
             log.warning("TTS generation failed: %s", e)
 
-    if args.sounds:
+    sfx_paths: dict[int, list[Path]] = {}
+    if want_sfx_dir:
         from . import sounds as sounds_mod
         try:
-            sfx_paths = sounds_mod.install_play_sounds(analysis.pivotal, args.sounds)
+            sfx_paths = sounds_mod.install_play_sounds(analysis.pivotal, want_sfx_dir)
             total = sum(len(v) for v in sfx_paths.values())
             log.info("installed %d SFX files for %d plays into %s",
-                     total, len(sfx_paths), args.sounds)
+                     total, len(sfx_paths), want_sfx_dir)
         except Exception as e:
             log.warning("SFX install failed: %s", e)
+
+    if args.mix:
+        from . import mix as mix_mod
+        try:
+            mix_paths = mix_mod.mix_match_audio(tts_paths, sfx_paths, kinds, args.mix)
+            log.info("mixed %d per-play clips into %s", len(mix_paths), args.mix)
+        except Exception as e:
+            log.warning("audio mix failed: %s", e)
 
     if args.json:
         out = dataclasses.asdict(analysis)

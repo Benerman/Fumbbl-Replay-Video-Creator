@@ -27,8 +27,12 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 DEFAULT_BACKEND = "say"
-DEFAULT_SAY_VOICE = "Daniel"             # British male; good for sports commentary
-DEFAULT_PYTTSX3_VOICE: str | None = None # let pyttsx3 pick
+# Gravelly macOS novelty voice that reads like an orc / goblin coach
+# yelling from the sidelines. Override with --tts-voice for a different
+# race vibe (Cellos = dramatic boomer, Bahh = snotling, Trinoids =
+# skaven warpstone radio, Cellos = vampire, etc.).
+DEFAULT_SAY_VOICE = "Bad News"
+DEFAULT_PYTTSX3_VOICE: str | None = None  # let pyttsx3 pick
 DEFAULT_OPENAI_MODEL = "tts-1"
 DEFAULT_OPENAI_VOICE = "alloy"
 
