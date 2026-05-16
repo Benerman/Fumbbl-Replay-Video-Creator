@@ -1,14 +1,20 @@
 """Fetch and crop FUMBBL position icon sheets to get per-player sprites.
 
 Each FUMBBL position (Elf Blitzer, Beastman Runner, etc.) has an
-icon sheet at `https://fumbbl.com/i/{position.icon}`. The sheets are
-4 columns wide; their height varies by position. Cells within a row
-are visual variants for the same colour scheme; rows are different
-colour schemes.
+icon sheet at `https://fumbbl.com/i/{position.icon}`. The sheet
+layout is fixed at 4 COLUMNS - these are not diversity variants but
+team-side + pose pairs, the same convention the FFB Java client uses
+in `PlayerIconFactory.getBasicIcon`:
 
-For our renderer we just need ONE sprite per player. We pick:
-  * column = `positionIconIndex % cols`  (the diversity variant)
-  * row    = 0 for home / last row for away  (visual team distinction)
+  col 0 = home, standing
+  col 1 = home, moving / acting
+  col 2 = away, standing
+  col 3 = away, moving / acting
+
+Rows are the diversity variants within a team (each player on the
+same position gets a different row so they aren't visually identical).
+The per-player `positionIconIndex` from the in-game roster picks the
+row; the team side picks the column.
 
 Both fetched icons and position payloads are cached on disk under
 `~/.cache/fumbbl-replay-video-creator/`. CLI runs that touch the same
@@ -96,14 +102,18 @@ def _fetch_image(image_id: int, subdir: str) -> Image.Image:
     return Image.open(cache_path).convert("RGBA")
 
 
-def extract_sprite(sheet: Image.Image, *, col: int, row: int) -> Image.Image:
-    """Crop one cell from a 4-column icon sheet."""
+def extract_sprite(sheet: Image.Image, *, side: str, row: int, moving: bool = False) -> Image.Image:
+    """Crop the cell for one player from a 4-column icon sheet.
+
+    Column layout matches FFB's `PlayerIconFactory.getBasicIcon`:
+    home-still=0, home-moving=1, away-still=2, away-moving=3.
+    """
     w, h = sheet.size
-    cols = ICON_COLS
-    cell_w = w // cols
-    rows_total = max(1, h // cell_w)  # cells are square - rows = h / cell_size
-    col = col % cols
+    cell_w = w // ICON_COLS
+    rows_total = max(1, h // cell_w)
     row = max(0, min(row, rows_total - 1))
+    col_base = 0 if side == "home" else 2
+    col = col_base + (1 if moving else 0)
     box = (col * cell_w, row * cell_w, (col + 1) * cell_w, (row + 1) * cell_w)
     return sheet.crop(box)
 
@@ -148,10 +158,8 @@ def build_player_sprites(
                 continue
             sheet_cache[pos.icon_image_id] = sheet
 
-        rows_total = max(1, sheet.size[1] // (sheet.size[0] // ICON_COLS))
-        row = 0 if info.side == "home" else rows_total - 1
-        col = position_icon_index.get(pid, 0)
-        out[pid] = extract_sprite(sheet, col=col, row=row)
+        row = position_icon_index.get(pid, 0)
+        out[pid] = extract_sprite(sheet, side=info.side, row=row, moving=False)
     return out
 
 

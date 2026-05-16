@@ -76,6 +76,42 @@ class TableauTargets:
         return {p for p in (self.scorer, self.victim, self.inflicter) if p}
 
 
+@dataclass
+class Layout:
+    """Geometry for either orientation. `bb_to_screen(x, y)` is the only
+    coordinate transform the rest of the renderer needs to call."""
+    orientation: str           # "vertical" | "horizontal"
+    cols: int                  # tile columns in image space
+    rows: int                  # tile rows
+    pitch_w: int               # px
+    pitch_h: int               # px
+    ox: int                    # pitch origin x
+    oy: int                    # pitch origin y
+    img_w: int
+    img_h: int
+
+    def bb_to_screen(self, bb_x: int, bb_y: int) -> tuple[int, int]:
+        """Centre of the tile for BB (x, y)."""
+        if self.orientation == "vertical":
+            return (self.ox + bb_y * TILE + TILE // 2,
+                    self.oy + bb_x * TILE + TILE // 2)
+        return (self.ox + bb_x * TILE + TILE // 2,
+                self.oy + bb_y * TILE + TILE // 2)
+
+
+def _layout(orientation: str) -> Layout:
+    if orientation == "vertical":
+        cols, rows = PITCH_HEIGHT, PITCH_WIDTH       # 15 × 26
+    else:
+        cols, rows = PITCH_WIDTH, PITCH_HEIGHT       # 26 × 15
+    pitch_w = cols * TILE
+    pitch_h = rows * TILE
+    img_w = pitch_w + 2 * MARGIN_X
+    img_h = pitch_h + MARGIN_TOP + CAPTION_H
+    return Layout(orientation, cols, rows, pitch_w, pitch_h,
+                   MARGIN_X, MARGIN_TOP, img_w, img_h)
+
+
 def render_tableau(
     play: PivotalPlay,
     state: FieldState,
@@ -83,67 +119,79 @@ def render_tableau(
     out_path: Path,
     sprites: dict[str, Image.Image] | None = None,
     *,
+    orientation: str = "vertical",
     home_name: str | None = None,
     away_name: str | None = None,
     home_logo: Image.Image | None = None,
     away_logo: Image.Image | None = None,
 ) -> Path:
-    """Render a vertical pitch tableau.
+    """Render one pivotal-play tableau.
 
-    Coordinate convention: FFB stores positions as (x, y) where x is
-    the long axis (0..25) and y is the short axis (0..14). In this
-    renderer we put the long axis VERTICALLY - BB x=0 is the top
-    endzone, BB x=25 is the bottom endzone - so screen pixels are
-    `sx = MARGIN_X + y * TILE` and `sy = MARGIN_TOP + x * TILE`.
+    Layers, bottom to top: pitch base -> logo watermark -> endzone
+    labels -> ball -> players + markers -> caption / header.
     """
+    if orientation not in ("vertical", "horizontal"):
+        raise ValueError(f"orientation must be 'vertical' or 'horizontal', got {orientation!r}")
     targets = _targets_for_play(play)
     sprites = sprites or {}
+    lay = _layout(orientation)
 
-    # Vertical layout: 15 cols × 26 rows of tiles
-    pitch_w = PITCH_HEIGHT * TILE     # screen width = BB y-axis (15)
-    pitch_h = PITCH_WIDTH * TILE      # screen height = BB x-axis (26)
-    img_w = pitch_w + 2 * MARGIN_X
-    img_h = pitch_h + MARGIN_TOP + CAPTION_H
-
-    img = Image.new("RGBA", (img_w, img_h), (24, 30, 24, 255))
+    img = Image.new("RGBA", (lay.img_w, lay.img_h), (24, 30, 24, 255))
     draw = ImageDraw.Draw(img)
     font = _font(13)
     small = _font(11)
     tiny = _font(9)
-    endzone_font = _font(20)
+    endzone_font = _font(20 if orientation == "vertical" else 16)
 
-    _draw_pitch(draw, MARGIN_X, MARGIN_TOP, pitch_w, pitch_h)
-    _draw_endzone_labels(draw, MARGIN_X, MARGIN_TOP, pitch_w,
-                          home_name, away_name, endzone_font)
-    _paste_logos(img, MARGIN_X, MARGIN_TOP, pitch_w, home_logo, away_logo)
+    # Layer 1: pitch base (grass, grid, endzone tint, LoS, wide zones).
+    _draw_pitch(draw, lay)
+    # Layer 2: team logo watermark (sits on the pitch but under everything else).
+    _paste_logos(img, lay, home_logo, away_logo)
+    # Layer 3: endzone team-name labels (drawn after logos so the text isn't washed).
+    _draw_endzone_labels(img, draw, lay, home_name, away_name, endzone_font)
+    # Layer 4: header bar above the pitch.
+    draw.text((lay.ox, 14), _header_text(play), fill=TEXT, font=font)
+    # Layer 5: ball.
+    _draw_ball(draw, lay, state)
+    # Layer 6: players + their state markers + the highlight ring.
+    _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
+    # Layer 7: caption strip.
+    _draw_caption(draw, lay, play, state, font, small)
 
-    # Header strip: who played, half, turn, score
-    header = _header_text(play)
-    draw.text((MARGIN_X, 14), header, fill=TEXT, font=font)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.convert("RGB").save(out_path)
+    return out_path
 
-    # Ball
-    if state.ball:
-        bx, by = state.ball
-        if 0 <= bx < PITCH_WIDTH and 0 <= by < PITCH_HEIGHT:
-            cx = MARGIN_X + by * TILE + TILE // 2
-            cy = MARGIN_TOP + bx * TILE + TILE // 2
-            r = TILE // 4
-            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=BALL_COLOR)
 
-    # Players on pitch
+def _draw_ball(draw: ImageDraw.ImageDraw, lay: Layout, state: FieldState) -> None:
+    if not state.ball:
+        return
+    bx, by = state.ball
+    if not (0 <= bx < PITCH_WIDTH and 0 <= by < PITCH_HEIGHT):
+        return
+    cx, cy = lay.bb_to_screen(bx, by)
+    r = TILE // 4
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=BALL_COLOR)
+
+
+def _draw_players(
+    img: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    lay: Layout,
+    state: FieldState,
+    player_lookup: dict[str, PlayerInfo],
+    sprites: dict[str, Image.Image],
+    targets: "TableauTargets",
+    tiny, small,
+) -> None:
     involved = targets.involved()
     for pid, (x, y) in state.on_pitch().items():
         info = player_lookup.get(pid)
         side = info.side if info else "home"
         color = HOME_COLOR if side == "home" else AWAY_COLOR
-        # Rotated: BB y -> screen x, BB x -> screen y.
-        cx = MARGIN_X + y * TILE + TILE // 2
-        cy = MARGIN_TOP + x * TILE + TILE // 2
+        cx, cy = lay.bb_to_screen(x, y)
         r = TILE // 2 - 3
         sprite = sprites.get(pid)
-        # Down-state visualisation: low 4 bits of player_states encode the base state.
-        # The FFB client overlays a "/" slash on prone players and an "X" on stunned
-        # players, leaving the sprite upright. We do the same.
         base_state = (state.player_states.get(pid, 0) or 0) & 0xF
         is_prone = base_state in _PRONE_STATES
         is_stunned = base_state == _STATE_STUNNED
@@ -152,18 +200,13 @@ def render_tableau(
             ring_r = r + (5 if sprite else 4)
             draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], fill=HIGHLIGHT)
         if sprite:
-            # Coloured disc behind the sprite for team identification.
             disc_r = r + 1
             draw.ellipse([cx - disc_r, cy - disc_r, cx + disc_r, cy + disc_r], fill=color + (255,))
             sw, sh = sprite.size
             scale = (TILE - 4) / max(sw, sh)
-            if scale != 1.0:
-                sprite_resized = sprite.resize((max(1, int(sw * scale)), max(1, int(sh * scale))),
-                                                resample=Image.NEAREST)
-            else:
-                sprite_resized = sprite
+            sprite_resized = sprite.resize((max(1, int(sw * scale)), max(1, int(sh * scale))),
+                                            resample=Image.NEAREST) if scale != 1.0 else sprite
             if is_dead:
-                # KO / casualty in the transitional pre-dugout-move state: dim it.
                 sprite_resized = _dim(sprite_resized)
             sw, sh = sprite_resized.size
             img.paste(sprite_resized, (cx - sw // 2, cy - sh // 2), sprite_resized)
@@ -171,7 +214,6 @@ def render_tableau(
                 _draw_prone_slash(draw, cx, cy, r)
             elif is_stunned:
                 _draw_stun_x(draw, cx, cy, r)
-            # Tiny jersey number badge in the bottom-right corner.
             if info and info.number is not None:
                 label = str(info.number)
                 tw, th = _text_size(draw, label, tiny)
@@ -189,26 +231,22 @@ def render_tableau(
             elif is_stunned:
                 _draw_stun_x(draw, cx, cy, r)
 
-    # Caption: weight + play headline, wrapped to fit the narrow vertical canvas.
+
+def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> None:
     weight_str = f"[{play.weight:.2f}]"
-    cap_y = MARGIN_TOP + pitch_h + 8
-    draw.text((MARGIN_X, cap_y), weight_str, fill=DIM_TEXT, font=font)
+    cap_y = lay.oy + lay.pitch_h + 8
+    draw.text((lay.ox, cap_y), weight_str, fill=DIM_TEXT, font=font)
     wt_w, _ = _text_size(draw, weight_str, font)
-    caption_x = MARGIN_X + wt_w + 6
-    max_caption_w = img_w - caption_x - MARGIN_X
+    caption_x = lay.ox + wt_w + 6
+    max_caption_w = lay.img_w - caption_x - lay.ox
     lines = _wrap_text(draw, play.headline(), font, max_caption_w)
     for i, line in enumerate(lines[:3]):
         draw.text((caption_x, cap_y + i * 14), line, fill=TEXT, font=font)
-
     n_off = len(state.off_pitch())
     if n_off:
-        draw.text((MARGIN_X, cap_y + len(lines) * 14 + 4),
+        draw.text((lay.ox, cap_y + len(lines) * 14 + 4),
                   f"({n_off} players off-pitch / in dugout)",
                   fill=DIM_TEXT, font=small)
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.convert("RGB").save(out_path)
-    return out_path
 
 
 def _targets_for_play(play: PivotalPlay) -> TableauTargets:
@@ -219,78 +257,107 @@ def _targets_for_play(play: PivotalPlay) -> TableauTargets:
     return TableauTargets(victim=play.player_id, inflicter=play.inflicter_id)
 
 
-def _draw_pitch(draw: ImageDraw.ImageDraw, ox: int, oy: int, w: int, h: int) -> None:
-    """Vertical pitch: BB x runs top-to-bottom, BB y runs left-to-right.
+def _draw_pitch(draw: ImageDraw.ImageDraw, lay: Layout) -> None:
+    """Pitch base: grass, endzone tint, wide-zone lines, line of scrimmage, grid.
 
-    Endzones are the top and bottom rows; line of scrimmage is the
-    horizontal line at BB x=13; wide zones are the two vertical lines
-    at BB y=4 and BB y=11.
+    Geometry differs by orientation. Vertical: endzones are top/bottom
+    rows, LoS is horizontal, wide zones are vertical lines. Horizontal:
+    endzones are left/right columns, LoS is vertical, wide zones are
+    horizontal lines.
     """
+    ox, oy, w, h = lay.ox, lay.oy, lay.pitch_w, lay.pitch_h
     draw.rectangle([ox, oy, ox + w, oy + h], fill=PITCH_GREEN)
-    # Endzones: top (BB x=0) and bottom (BB x=25) rows, full pitch width.
-    draw.rectangle([ox, oy, ox + w, oy + TILE], fill=ENDZONE_TINT)
-    draw.rectangle([ox, oy + h - TILE, ox + w, oy + h], fill=ENDZONE_TINT)
-    # Wide zones: vertical separator lines at BB y=4 and y=11.
-    wide_left = ox + 4 * TILE
-    wide_right = ox + 11 * TILE
-    draw.line([wide_left, oy, wide_left, oy + h], fill=WIDE_TINT, width=1)
-    draw.line([wide_right, oy, wide_right, oy + h], fill=WIDE_TINT, width=1)
-    # Line of scrimmage: horizontal line at BB x=13.
-    los = oy + 13 * TILE
-    draw.line([ox, los, ox + w, los], fill=PITCH_LINE, width=2)
-    # Subtle grid: PITCH_HEIGHT (15) vertical lines, PITCH_WIDTH (26) horizontal lines.
-    for col in range(1, PITCH_HEIGHT):
-        gx = ox + col * TILE
+    if lay.orientation == "vertical":
+        # Endzones: top (BB x=0) and bottom (BB x=25).
+        draw.rectangle([ox, oy, ox + w, oy + TILE], fill=ENDZONE_TINT)
+        draw.rectangle([ox, oy + h - TILE, ox + w, oy + h], fill=ENDZONE_TINT)
+        # Wide-zone separators (vertical lines at BB y=4 and y=11).
+        for ywz in (4, 11):
+            draw.line([ox + ywz * TILE, oy, ox + ywz * TILE, oy + h], fill=WIDE_TINT, width=1)
+        # Line of scrimmage (horizontal at BB x=13).
+        los = oy + 13 * TILE
+        draw.line([ox, los, ox + w, los], fill=PITCH_LINE, width=2)
+    else:
+        # Endzones: left (BB x=0) and right (BB x=25).
+        draw.rectangle([ox, oy, ox + TILE, oy + h], fill=ENDZONE_TINT)
+        draw.rectangle([ox + w - TILE, oy, ox + w, oy + h], fill=ENDZONE_TINT)
+        # Wide-zone separators (horizontal lines at BB y=4 and y=11).
+        for ywz in (4, 11):
+            draw.line([ox, oy + ywz * TILE, ox + w, oy + ywz * TILE], fill=WIDE_TINT, width=1)
+        # Line of scrimmage (vertical at BB x=13).
+        los = ox + 13 * TILE
+        draw.line([los, oy, los, oy + h], fill=PITCH_LINE, width=2)
+    # Subtle grid — independent of orientation.
+    for c in range(1, lay.cols):
+        gx = ox + c * TILE
         draw.line([gx, oy, gx, oy + h], fill=(48, 100, 56), width=1)
-    for row in range(1, PITCH_WIDTH):
-        gy = oy + row * TILE
+    for r in range(1, lay.rows):
+        gy = oy + r * TILE
         draw.line([ox, gy, ox + w, gy], fill=(48, 100, 56), width=1)
 
 
 def _draw_endzone_labels(
+    img: Image.Image,
     draw: ImageDraw.ImageDraw,
-    ox: int, oy: int, w: int,
+    lay: Layout,
     home_name: str | None,
     away_name: str | None,
     font,
 ) -> None:
-    """Stamp team names in the endzones. Home goes top, away goes bottom."""
+    """Stamp team names in the endzones. Home defends one endzone, away
+    the other; in vertical layout home is on top, in horizontal layout
+    home is on the left (rotated so it reads up the endzone)."""
+    ox, oy = lay.ox, lay.oy
+    if lay.orientation == "vertical":
+        home_box = (ox, oy, lay.pitch_w, TILE)
+        away_box = (ox, oy + (PITCH_WIDTH - 1) * TILE, lay.pitch_w, TILE)
+    else:
+        home_box = (ox, oy, TILE, lay.pitch_h)
+        away_box = (ox + (PITCH_WIDTH - 1) * TILE, oy, TILE, lay.pitch_h)
+
+    rotate = lay.orientation == "horizontal"
     if home_name:
-        _centered_text(draw, home_name, ox, oy, w, TILE, HOME_COLOR, font)
+        _draw_label_in_box(img, draw, home_name, *home_box, HOME_COLOR, font, rotate=rotate)
     if away_name:
-        # Bottom endzone is the LAST row.
-        _centered_text(draw, away_name, ox, oy + (PITCH_WIDTH - 1) * TILE, w, TILE,
-                       AWAY_COLOR, font)
+        _draw_label_in_box(img, draw, away_name, *away_box, AWAY_COLOR, font, rotate=rotate)
 
 
-def _centered_text(draw, text: str, ox: int, oy: int, w: int, h: int,
-                    color, font) -> None:
+def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bool):
+    """Centre-render text inside a box; rotate 90° if requested."""
+    if not rotate:
+        tw, th = _text_size(draw, text, font)
+        draw.text((ox + (w - tw) // 2, oy + (h - th) // 2), text, fill=color, font=font)
+        return
     tw, th = _text_size(draw, text, font)
-    draw.text((ox + (w - tw) // 2, oy + (h - th) // 2), text, fill=color, font=font)
+    tmp = Image.new("RGBA", (tw + 4, th + 4), (0, 0, 0, 0))
+    ImageDraw.Draw(tmp).text((2, 2), text, fill=color, font=font)
+    rotated = tmp.rotate(90, expand=True, resample=Image.BICUBIC)
+    rw, rh = rotated.size
+    img.alpha_composite(rotated, (ox + (w - rw) // 2, oy + (h - rh) // 2))
 
 
 def _paste_logos(
     img: Image.Image,
-    ox: int, oy: int, w: int,
+    lay: Layout,
     home_logo: Image.Image | None,
     away_logo: Image.Image | None,
 ) -> None:
-    """Drop a faded team logo as a watermark in each half of the pitch.
+    """Faded team logos in each half of the pitch.
 
-    Home half = top (BB x=1..12), away half = bottom (BB x=13..24).
+    Vertical: top half = home, bottom half = away.
+    Horizontal: left half = home, right half = away.
     """
-    # Logo fits roughly within a 5×5 tile area, centred on the half.
     logo_target = 5 * TILE
+    if lay.orientation == "vertical":
+        home_cx, home_cy = lay.ox + lay.pitch_w // 2, lay.oy + 7 * TILE
+        away_cx, away_cy = lay.ox + lay.pitch_w // 2, lay.oy + 19 * TILE
+    else:
+        home_cx, home_cy = lay.ox + 7 * TILE, lay.oy + lay.pitch_h // 2
+        away_cx, away_cy = lay.ox + 19 * TILE, lay.oy + lay.pitch_h // 2
     if home_logo is not None:
-        _paste_centered_logo(img, home_logo,
-                              ox + w // 2,
-                              oy + (1 + 6) * TILE,  # centre of rows 1..12 is row ~6
-                              logo_target)
+        _paste_centered_logo(img, home_logo, home_cx, home_cy, logo_target)
     if away_logo is not None:
-        _paste_centered_logo(img, away_logo,
-                              ox + w // 2,
-                              oy + (13 + 6) * TILE,  # centre of rows 13..24
-                              logo_target)
+        _paste_centered_logo(img, away_logo, away_cx, away_cy, logo_target)
 
 
 def _paste_centered_logo(canvas: Image.Image, logo: Image.Image,

@@ -46,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Render an animated GIF per pivotal play into this directory")
     parser.add_argument("--no-sprites", action="store_true",
                         help="Skip the FUMBBL position sprite fetch; render plain coloured tokens")
+    parser.add_argument("--orientation", choices=("vertical", "horizontal"), default="vertical",
+                        help="Pitch orientation in tableaux/GIFs (default: vertical)")
     parser.add_argument("--commentary", action="store_true",
                         help="Generate one whimsical commentary line per pivotal play (calls Claude API; needs ANTHROPIC_API_KEY)")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -168,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
             tableau.render_tableau(
                 p, state, player_lookup or {}, out,
                 sprites=player_sprites,
+                orientation=args.orientation,
                 home_name=home_name, away_name=away_name,
                 home_logo=home_logo_img, away_logo=away_logo_img,
             )
@@ -184,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
             animate.render_play_gif(
                 replay, p, player_lookup or {}, out,
                 sprites=player_sprites,
+                orientation=args.orientation,
                 home_name=home_name, away_name=away_name,
                 home_logo=home_logo_img, away_logo=away_logo_img,
             )

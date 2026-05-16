@@ -41,6 +41,7 @@ def render_play_gif(
     out_path: Path,
     *,
     sprites: dict[str, Image.Image] | None = None,
+    orientation: str = "vertical",
     home_name: str | None = None,
     away_name: str | None = None,
     home_logo: Image.Image | None = None,
@@ -104,6 +105,7 @@ def render_play_gif(
         render_tableau(
             play, state, player_lookup, img_path,
             sprites=sprites,
+            orientation=orientation,
             home_name=home_name, away_name=away_name,
             home_logo=home_logo, away_logo=away_logo,
         )
