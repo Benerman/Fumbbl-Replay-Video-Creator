@@ -40,6 +40,14 @@ _STATE_FALLING = 12
 _STATE_HIT_GROUND = 13
 _DOWN_STATES = {_STATE_PRONE, _STATE_STUNNED, _STATE_KO, _STATE_BH, _STATE_SI, _STATE_RIP,
                 _STATE_BLOCKED, _STATE_FALLING, _STATE_HIT_GROUND}
+# FFB shows a slash on PRONE figures and an X on STUNNED. Other transient
+# down-states (just-blocked, mid-fall) get the slash too since they will
+# settle into PRONE next, or into STUNNED if KO'd.
+_PRONE_STATES = {_STATE_PRONE, _STATE_BLOCKED, _STATE_FALLING, _STATE_HIT_GROUND}
+
+# Marker colours: a bright red the FFB client uses.
+_MARKER_COLOR = (235, 40, 35)
+_MARKER_WIDTH = 3
 # Margins around the pitch.
 MARGIN_X = 20
 MARGIN_TOP = 50
@@ -115,11 +123,12 @@ def render_tableau(
         r = TILE // 2 - 3
         sprite = sprites.get(pid)
         # Down-state visualisation: low 4 bits of player_states encode the base state.
-        # 3=PRONE 4=STUNNED 5=KO 6=BH 7=SI 8=RIP 11=BLOCKED 12=FALLING 13=HIT_ON_GROUND.
-        # Anything other than 1/2 (STANDING/MOVING) gets rendered as down.
+        # The FFB client overlays a "/" slash on prone players and an "X" on stunned
+        # players, leaving the sprite upright. We do the same.
         base_state = (state.player_states.get(pid, 0) or 0) & 0xF
-        is_down = base_state in _DOWN_STATES
+        is_prone = base_state in _PRONE_STATES
         is_stunned = base_state == _STATE_STUNNED
+        is_dead = base_state in (_STATE_KO, _STATE_BH, _STATE_SI, _STATE_RIP)
         if pid in involved:
             ring_r = r + (5 if sprite else 4)
             draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], fill=HIGHLIGHT)
@@ -134,16 +143,15 @@ def render_tableau(
                                                 resample=Image.NEAREST)
             else:
                 sprite_resized = sprite
-            if is_down:
-                sprite_resized = sprite_resized.rotate(-90, expand=True, resample=Image.NEAREST)
-                # Dim a knocked-out figure so it reads "off the action".
-                if base_state in (_STATE_STUNNED, _STATE_KO, _STATE_BH, _STATE_SI, _STATE_RIP):
-                    sprite_resized = _dim(sprite_resized)
+            if is_dead:
+                # KO / casualty in the transitional pre-dugout-move state: dim it.
+                sprite_resized = _dim(sprite_resized)
             sw, sh = sprite_resized.size
             img.paste(sprite_resized, (cx - sw // 2, cy - sh // 2), sprite_resized)
-            if is_stunned:
-                # Yellow asterisk above the head for "stunned" — distinct from plain prone.
-                _draw_stun_marker(draw, cx, cy - r, font)
+            if is_prone:
+                _draw_prone_slash(draw, cx, cy, r)
+            elif is_stunned:
+                _draw_stun_x(draw, cx, cy, r)
             # Tiny jersey number badge in the bottom-right corner.
             if info and info.number is not None:
                 label = str(info.number)
@@ -157,12 +165,10 @@ def render_tableau(
                 label = str(info.number)
                 tw, th = _text_size(draw, label, small)
                 draw.text((cx - tw / 2, cy - th / 2), label, fill=(255, 255, 255), font=small)
-            if is_down:
-                # Without a sprite we draw a pale horizontal bar across the disc to
-                # convey "down".
-                draw.line([cx - r, cy, cx + r, cy], fill=(20, 20, 20), width=2)
-            if is_stunned:
-                _draw_stun_marker(draw, cx, cy - r, font)
+            if is_prone:
+                _draw_prone_slash(draw, cx, cy, r)
+            elif is_stunned:
+                _draw_stun_x(draw, cx, cy, r)
 
     # Caption: the play headline.
     caption = play.headline()
@@ -237,9 +243,15 @@ def _dim(im: Image.Image) -> Image.Image:
     return out
 
 
-def _draw_stun_marker(draw: ImageDraw.ImageDraw, cx: int, cy: int, font) -> None:
-    """Yellow asterisk just above the player's head — universal "stunned"."""
-    draw.text((cx - 4, cy - 12), "*", fill=HIGHLIGHT, font=font)
+def _draw_prone_slash(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int) -> None:
+    """Bright red slash across the player — matches the FFB client's prone marker."""
+    draw.line([cx - r, cy + r, cx + r, cy - r], fill=_MARKER_COLOR, width=_MARKER_WIDTH)
+
+
+def _draw_stun_x(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int) -> None:
+    """Bright red X across the player — matches the FFB client's stunned marker."""
+    draw.line([cx - r, cy - r, cx + r, cy + r], fill=_MARKER_COLOR, width=_MARKER_WIDTH)
+    draw.line([cx - r, cy + r, cx + r, cy - r], fill=_MARKER_COLOR, width=_MARKER_WIDTH)
 
 
 def _font(size: int) -> ImageFont.ImageFont:
