@@ -1,110 +1,84 @@
 """CLI entry point.
 
 Usage:
-    # Fetch a replay via the FFB websocket protocol, save the raw event stream.
-    python -m fumbbl_replay fetch <jnlp-source> [--dump out/replay.ndjson]
 
-    # Quick analyzer against the FUMBBL match API (no websocket).
-    # Falls back to summary-level pivotal plays.
-    python -m fumbbl_replay summary <match-id>
+    python -m fumbbl_replay <replay-ref> [--json] [--dump-replay PATH] [--no-replay] [--no-rosters]
 
-`<jnlp-source>` is either:
+`<replay-ref>` is any of:
     * a FUMBBL replay URL, e.g. https://fumbbl.com/ffblive.jnlp?replay=1901135
-    * a local path to a .jnlp file you've saved
+    * a local path to a saved .jnlp file
+    * a bare match id, e.g. 1901135
 
-Network reachability: the `fetch` subcommand needs to reach the FFB
-live server on port 22223 (default). That port is firewalled from
-many cloud sandboxes; run from a machine that can reach it.
+The default pipeline pulls the match summary, fetches the gzipped
+replay event log over HTTP, identifies pivotal plays (TDs, kills,
+injuries) with their player names and turn numbers, and prints a
+text report. `--json` switches to structured JSON for downstream
+tooling. `--no-replay` skips the event-log step and reports
+summary-level totals only.
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import gzip
 import json
 import logging
 import sys
 from pathlib import Path
 
-from . import analyzer, ffb_client, fumbbl_api, jnlp_loader
+from . import analyzer, events, fumbbl_api, jnlp_loader
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fumbbl-replay")
-    sub = parser.add_subparsers(dest="cmd", required=True)
-
-    p_fetch = sub.add_parser("fetch", help="Fetch full replay via FFB websocket")
-    p_fetch.add_argument("source", help="JNLP URL or local .jnlp path")
-    p_fetch.add_argument(
-        "--dump", type=Path, default=None,
-        help="Write the raw replay stream as NDJSON to this file",
-    )
-    p_fetch.add_argument(
-        "--timeout", type=float, default=30.0,
-        help="Idle read timeout in seconds (default: 30)",
-    )
-    p_fetch.add_argument("--verbose", "-v", action="store_true")
-
-    p_summary = sub.add_parser("summary", help="Quick analysis from match summary API")
-    p_summary.add_argument("match_id", type=int)
-    p_summary.add_argument("--json", action="store_true")
-    p_summary.add_argument("--no-rosters", action="store_true")
-    p_summary.add_argument("--verbose", "-v", action="store_true")
-
+    parser.add_argument("replay_ref", help="FUMBBL replay URL, .jnlp path, or numeric match id")
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of a text report")
+    parser.add_argument("--no-replay", action="store_true",
+                        help="Skip the replay event log, use summary totals only")
+    parser.add_argument("--no-rosters", action="store_true",
+                        help="Skip the per-team roster fetch (omits player names from headlines)")
+    parser.add_argument("--dump-replay", type=Path, default=None,
+                        help="Save the raw replay JSON (gzipped) to this path")
+    parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
+
     logging.basicConfig(
-        level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
+        level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-
-    if args.cmd == "fetch":
-        return _cmd_fetch(args)
-    if args.cmd == "summary":
-        return _cmd_summary(args)
-    parser.error(f"unknown command {args.cmd!r}")
-    return 2
-
-
-def _cmd_fetch(args) -> int:
-    info = jnlp_loader.load(args.source)
     log = logging.getLogger("fumbbl_replay")
-    log.info("parsed JNLP: %s", info.as_dict())
 
-    def progress(d: ffb_client.ReplayDump) -> None:
-        if d.total_commands:
-            log.info("  ... %d/%d commands", d.received_commands, d.total_commands)
-        else:
-            log.info("  ... %d commands so far", d.received_commands)
+    match_id = jnlp_loader.resolve(args.replay_ref)
+    log.info("resolved replay ref to match id %d", match_id)
 
-    dump = ffb_client.fetch_replay(info, timeout_s=args.timeout, on_progress=progress)
-    inner = dump.replay_commands()
-    log.info(
-        "received %d server messages, %d replay commands inside (lastCommand=%s)",
-        len(dump.server_messages), len(inner), dump.last_seen,
-    )
+    summary = fumbbl_api.fetch_match_summary(match_id)
 
-    if args.dump:
-        ffb_client.save_dump(dump, args.dump)
-
-    # Tally the most common netCommandIds so the user can see the shape.
-    counts: dict[str, int] = {}
-    for cmd in inner:
-        cid = cmd.get("netCommandId", "<missing>")
-        counts[cid] = counts.get(cid, 0) + 1
-    log.info("inner command-id histogram (top 10):")
-    for cid, n in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]:
-        log.info("  %6d  %s", n, cid)
-
-    return 0
-
-
-def _cmd_summary(args) -> int:
-    summary = fumbbl_api.fetch_match_summary(args.match_id)
     team_home = team_away = None
     if not args.no_rosters:
         team_home = fumbbl_api.fetch_team(int(summary["team1"]["id"]))
         team_away = fumbbl_api.fetch_team(int(summary["team2"]["id"]))
-    analysis = analyzer.analyze(summary, team_home, team_away)
+
+    event_list = None
+    player_lookup = None
+    if not args.no_replay:
+        replay_id = fumbbl_api.resolve_replay_id(match_id, summary)
+        replay = fumbbl_api.fetch_replay(replay_id)
+        event_list = events.extract_events(replay)
+        player_lookup = events.roster_from_replay(replay)
+        log.info("extracted %d events from replay %d (%d in-game players)",
+                 len(event_list), replay_id, len(player_lookup))
+        if args.dump_replay:
+            args.dump_replay.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(args.dump_replay, "wt", encoding="utf-8") as f:
+                json.dump(replay, f)
+            log.info("dumped raw replay to %s", args.dump_replay)
+
+    analysis = analyzer.analyze(
+        summary, team_home, team_away,
+        events=event_list, player_lookup=player_lookup,
+    )
+
     if args.json:
         print(json.dumps(dataclasses.asdict(analysis), indent=2))
     else:

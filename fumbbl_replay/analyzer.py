@@ -1,21 +1,21 @@
 """Identify pivotal plays from a FUMBBL match.
 
-Given a match summary (and optionally the two team rosters), emit a
-ranked list of plays that mattered most plus the assets we know we
-have to draw with: team logos and player portraits.
+Given a match summary, optionally enriched with the two team rosters
+and the per-event replay timeline, emit a ranked list of plays that
+mattered most.
 
-A "pivotal play" is currently one of:
+A pivotal play is one of:
 
   * a touchdown   - scoring is by definition impactful
-  * an injury     - BH (knocked out, lingering effect on drive),
+  * an injury     - BH (KO; lingering drive-level impact),
                     SI (out of game, roster-level impact),
                     RIP (dead, hardest possible swing)
 
-Each play is weighted by rough win-probability impact:
-  TD 1.0, RIP 0.8, SI 0.5, BH 0.2.
-When the per-turn event log becomes available we can refine with
-context like "score-tying TD in the last turn" or "casualty on a
-star player".
+Weights:  TD 1.0  RIP 0.8  SI 0.5  BH 0.2.
+
+When events from the replay log are supplied the report names the
+scoring/injured player, the half, and the turn. Without events we
+fall back to summary totals only.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .events import Event, PlayerInfo
 from .fumbbl_api import image_url
 
 
@@ -33,19 +34,41 @@ _TD_WEIGHT = 1.0
 @dataclass
 class PivotalPlay:
     kind: str          # "touchdown" | "casualty"
-    detail: str        # "RIP" / "SI" / "BH" for casualties, "" for TDs
+    detail: str        # "RIP" / "SI" / "BH" for casualties; "" for TDs
     team_id: int
     team_name: str
     against_team: str
     weight: float
+    half: int | None = None
+    turn: int | None = None
+    player_id: str | None = None
+    player_name: str | None = None
+    injury_label: str | None = None
 
     def headline(self) -> str:
+        actor = self.player_name or "a player"
+        when = self._when_phrase()
         if self.kind == "touchdown":
-            return f"{self.team_name} scored a touchdown"
+            if self.player_name:
+                return f"{self.player_name} ({self.team_name}) scored a touchdown{when}"
+            return f"{self.team_name} scored a touchdown{when}"
         sev = {"rip": "killed", "si": "seriously injured", "bh": "knocked out"}.get(
             self.detail.lower(), self.detail
         )
-        return f"{self.team_name} had a player {sev}"
+        label = f" - {self.injury_label}" if self.injury_label and self.detail.lower() != "rip" else ""
+        if self.player_name:
+            return f"{self.player_name} ({self.team_name}) was {sev}{when}{label}"
+        return f"{self.team_name} had {actor} {sev}{when}{label}"
+
+    def _when_phrase(self) -> str:
+        if not self.half and not self.turn:
+            return ""
+        parts = []
+        if self.turn:
+            parts.append(f"turn {self.turn}")
+        if self.half:
+            parts.append(f"half {self.half}")
+        return " (" + ", ".join(parts) + ")" if parts else ""
 
 
 @dataclass
@@ -64,6 +87,14 @@ class TeamInfo:
     def player_count(self) -> int:
         return len(self.players)
 
+    def player_name(self, player_id: str | None) -> str | None:
+        if not player_id:
+            return None
+        for p in self.players:
+            if str(p.get("id")) == str(player_id):
+                return p.get("name")
+        return None
+
 
 @dataclass
 class MatchAnalysis:
@@ -76,6 +107,7 @@ class MatchAnalysis:
     winner: str | None
     margin: int
     pivotal: list[PivotalPlay]
+    has_event_log: bool = False
 
     def summary_line(self) -> str:
         return (
@@ -90,29 +122,22 @@ def analyze(
     summary: dict[str, Any],
     team_home: dict[str, Any] | None = None,
     team_away: dict[str, Any] | None = None,
+    events: list[Event] | None = None,
+    player_lookup: dict[str, PlayerInfo] | None = None,
 ) -> MatchAnalysis:
     home_raw = summary["team1"]
     away_raw = summary["team2"]
     home = _team_info(home_raw, team_home)
     away = _team_info(away_raw, team_away)
 
-    pivotal: list[PivotalPlay] = []
-    for _ in range(home.score):
-        pivotal.append(_td(home, away))
-    for _ in range(away.score):
-        pivotal.append(_td(away, home))
+    if events:
+        pivotal = _pivotal_from_events(events, home, away, player_lookup or {})
+        has_event_log = True
+    else:
+        pivotal = _pivotal_from_summary(home, away)
+        has_event_log = False
 
-    for team, opp in ((home, away), (away, home)):
-        for sev in ("rip", "si", "bh"):
-            for _ in range(team.casualties.get(sev, 0)):
-                pivotal.append(PivotalPlay(
-                    kind="casualty", detail=sev.upper(),
-                    team_id=team.id, team_name=team.name,
-                    against_team=opp.name,
-                    weight=_CASUALTY_WEIGHT[sev],
-                ))
-
-    pivotal.sort(key=lambda p: p.weight, reverse=True)
+    pivotal.sort(key=lambda p: (-p.weight, p.half or 0, p.turn or 0, p.team_name))
 
     if home.score > away.score:
         winner = home.name
@@ -131,7 +156,68 @@ def analyze(
         winner=winner,
         margin=abs(home.score - away.score),
         pivotal=pivotal,
+        has_event_log=has_event_log,
     )
+
+
+def _pivotal_from_events(
+    events: list[Event],
+    home: TeamInfo,
+    away: TeamInfo,
+    player_lookup: dict[str, PlayerInfo],
+) -> list[PivotalPlay]:
+    def resolve_name(team: TeamInfo, player_id: str | None) -> str | None:
+        if not player_id:
+            return None
+        info = player_lookup.get(str(player_id))
+        if info and info.name:
+            return info.name
+        # Fall back to the persistent roster (rare; replay roster nearly always wins).
+        return team.player_name(player_id)
+
+    out: list[PivotalPlay] = []
+    for e in events:
+        team = home if e.side == "home" else away
+        opp = away if e.side == "home" else home
+        if e.kind == "touchdown":
+            out.append(PivotalPlay(
+                kind="touchdown", detail="",
+                team_id=team.id, team_name=team.name, against_team=opp.name,
+                weight=_TD_WEIGHT,
+                half=e.half or None, turn=e.turn or None,
+                player_id=e.player_id,
+                player_name=resolve_name(team, e.player_id),
+            ))
+        elif e.kind in ("kill", "serious_injury", "badly_hurt"):
+            sev = {"kill": "rip", "serious_injury": "si", "badly_hurt": "bh"}[e.kind]
+            out.append(PivotalPlay(
+                kind="casualty", detail=sev.upper(),
+                team_id=team.id, team_name=team.name, against_team=opp.name,
+                weight=_CASUALTY_WEIGHT[sev],
+                half=e.half or None, turn=e.turn or None,
+                player_id=e.player_id,
+                player_name=resolve_name(team, e.player_id),
+                injury_label=e.detail,
+            ))
+    return out
+
+
+def _pivotal_from_summary(home: TeamInfo, away: TeamInfo) -> list[PivotalPlay]:
+    out: list[PivotalPlay] = []
+    for _ in range(home.score):
+        out.append(_td(home, away))
+    for _ in range(away.score):
+        out.append(_td(away, home))
+    for team, opp in ((home, away), (away, home)):
+        for sev in ("rip", "si", "bh"):
+            for _ in range(team.casualties.get(sev, 0)):
+                out.append(PivotalPlay(
+                    kind="casualty", detail=sev.upper(),
+                    team_id=team.id, team_name=team.name,
+                    against_team=opp.name,
+                    weight=_CASUALTY_WEIGHT[sev],
+                ))
+    return out
 
 
 def _team_info(match_team: dict[str, Any], full: dict[str, Any] | None) -> TeamInfo:
@@ -201,7 +287,8 @@ def format_report(a: MatchAnalysis) -> str:
         lines.append(f"     casualties suffered: BH={t.casualties.get('bh',0)} SI={t.casualties.get('si',0)} RIP={t.casualties.get('rip',0)}")
 
     lines.append("")
-    lines.append(f"  Pivotal plays ({len(a.pivotal)}):")
+    src = "replay event log" if a.has_event_log else "summary totals"
+    lines.append(f"  Pivotal plays ({len(a.pivotal)}, from {src}):")
     if not a.pivotal:
         lines.append("    (no scoring or casualties recorded)")
     for i, p in enumerate(a.pivotal, 1):

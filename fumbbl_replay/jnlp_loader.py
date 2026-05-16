@@ -1,28 +1,22 @@
-"""Parse a FUMBBL FFB `.jnlp` launcher to get the connection parameters.
+"""Resolve a user-supplied replay reference to a numeric match id.
 
-A FFB JNLP descriptor (https://fumbbl.com/ffblive.jnlp?replay=N) is a
-Java Web Start launcher. It does not contain the replay payload - only
-the parameters the FFB Java client needs to connect to the FFB live
-server over a websocket and stream the replay.
+We accept any of:
 
-We pull out:
-  * gameId      - which replay to fetch
-  * port        - websocket port (typically 22223)
-  * coach       - coach name the client identifies itself with
-  * codebase    - server host (e.g. fumbbl.com)
-  * websocket   - derived ws://{host}:{port}/command URL
+  * a bare numeric id (e.g. `1901135`)
+  * a FUMBBL replay URL (e.g. `https://fumbbl.com/ffblive.jnlp?replay=1901135`)
+  * a path to a local `.jnlp` file the user has saved
 
-Input can be a remote URL (we fetch the JNLP) or a local file path
-(we read it).
+JNLP descriptors are Java Web Start launchers used by the official FFB
+client. We don't need the launcher itself - we just want the gameId.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 import requests
 
@@ -31,44 +25,22 @@ log = logging.getLogger(__name__)
 USER_AGENT = "fumbbl-replay-video-creator/0.1"
 
 
-@dataclass
-class JnlpReplayInfo:
-    game_id: int
-    server_host: str
-    server_port: int
-    coach: str
-    main_class: str
-    raw_args: list[str]
-
-    @property
-    def websocket_url(self) -> str:
-        return f"ws://{self.server_host}:{self.server_port}/command"
-
-    def as_dict(self) -> dict:
-        return {
-            "game_id": self.game_id,
-            "server_host": self.server_host,
-            "server_port": self.server_port,
-            "coach": self.coach,
-            "main_class": self.main_class,
-            "websocket_url": self.websocket_url,
-            "raw_args": self.raw_args,
-        }
-
-
-def load(source: str) -> JnlpReplayInfo:
-    """Load a JNLP from a URL or a file path and parse it."""
-    if source.startswith(("http://", "https://")):
-        text = _fetch(source)
-        host_hint = urlparse(source).hostname or "fumbbl.com"
-    else:
-        path = Path(source)
-        if not path.exists():
-            raise FileNotFoundError(source)
-        text = path.read_text(encoding="utf-8")
-        host_hint = "fumbbl.com"
-
-    return _parse(text, fallback_host=host_hint)
+def resolve(ref: str) -> int:
+    """Return the numeric match id for a replay reference (URL, file, or bare id)."""
+    ref = ref.strip()
+    if ref.isdigit():
+        return int(ref)
+    if ref.startswith(("http://", "https://")):
+        # Many FFB links carry ?replay=N in the query string already; check that first.
+        qs = parse_qs(urlparse(ref).query)
+        for key in ("replay", "gameId"):
+            if key in qs and qs[key] and qs[key][0].isdigit():
+                return int(qs[key][0])
+        return _from_jnlp_text(_fetch(ref))
+    path = Path(ref)
+    if path.exists():
+        return _from_jnlp_text(path.read_text(encoding="utf-8"))
+    raise ValueError(f"can't resolve replay reference: {ref!r}")
 
 
 def _fetch(url: str) -> str:
@@ -78,57 +50,26 @@ def _fetch(url: str) -> str:
     return r.text
 
 
-def _parse(jnlp_text: str, *, fallback_host: str) -> JnlpReplayInfo:
-    root = ET.fromstring(jnlp_text)
-
-    # codebase tells us the host the client should connect to.
-    codebase = root.attrib.get("codebase") or ""
-    host = urlparse(codebase).hostname or fallback_host
-
-    app = root.find(".//application-desc") or root.find(".//applet-desc")
-    if app is None:
-        raise ValueError("JNLP has no <application-desc> / <applet-desc>")
-
-    main_class = app.attrib.get("main-class", "")
-    args = [a.text.strip() for a in app.findall("argument") if a.text]
-
-    game_id = _parse_arg_int(args, "-gameId", "--gameId")
-    if game_id is None:
-        # FFB JNLP also uses ?replay=N in the href, fall back to that.
+def _from_jnlp_text(text: str) -> int:
+    # Try strict XML first; FUMBBL's JNLP is well-formed.
+    try:
+        root = ET.fromstring(text)
+        app = root.find(".//application-desc") or root.find(".//applet-desc")
+        if app is not None:
+            args = [a.text.strip() for a in app.findall("argument") if a.text]
+            for i, a in enumerate(args):
+                if a in ("-gameId", "--gameId") and i + 1 < len(args) and args[i + 1].isdigit():
+                    return int(args[i + 1])
+        # Fall through: look for ?replay=N in <jnlp href="...">
         href = root.attrib.get("href") or ""
-        for kv in href.split("?", 1)[-1].split("&"):
-            if "=" in kv:
-                k, v = kv.split("=", 1)
-                if k in ("replay", "gameId") and v.isdigit():
-                    game_id = int(v)
-                    break
-    if game_id is None:
-        raise ValueError("JNLP has no -gameId argument")
-
-    port = _parse_arg_int(args, "-port", "--port") or 22223
-    coach = _parse_arg_str(args, "-coach", "--coach") or "spectator"
-
-    return JnlpReplayInfo(
-        game_id=game_id,
-        server_host=host,
-        server_port=port,
-        coach=coach,
-        main_class=main_class,
-        raw_args=args,
-    )
-
-
-def _parse_arg_int(args: list[str], *keys: str) -> int | None:
-    for i, a in enumerate(args):
-        if a in keys and i + 1 < len(args):
-            v = args[i + 1]
-            if v.isdigit():
-                return int(v)
-    return None
-
-
-def _parse_arg_str(args: list[str], *keys: str) -> str | None:
-    for i, a in enumerate(args):
-        if a in keys and i + 1 < len(args):
-            return args[i + 1]
-    return None
+        qs = parse_qs(urlparse(href).query)
+        for key in ("replay", "gameId"):
+            if key in qs and qs[key] and qs[key][0].isdigit():
+                return int(qs[key][0])
+    except ET.ParseError:
+        pass
+    # Last resort: regex sweep.
+    m = re.search(r"(?:replay|gameId)[=\s]+(\d+)", text)
+    if m:
+        return int(m.group(1))
+    raise ValueError("could not find a gameId in JNLP content")
