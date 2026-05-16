@@ -133,6 +133,7 @@ def render_tableau(
     home_logo: Image.Image | None = None,
     away_logo: Image.Image | None = None,
     dice: list | None = None,
+    pitch_background: Image.Image | None = None,
 ) -> Path:
     """Render one pivotal-play tableau.
 
@@ -152,8 +153,13 @@ def render_tableau(
     tiny = _font(9)
     endzone_font = _font(20 if orientation == "vertical" else 16)
 
-    # Layer 1: pitch base (grass, grid, endzone tint, LoS, wide zones).
-    _draw_pitch(draw, lay)
+    # Layer 1: pitch base. Use the weather-themed FFB pitch PNG when
+    # we have one (full bitmap with LoS + hash marks baked in); fall
+    # back to procedural drawing otherwise.
+    if pitch_background is not None:
+        _paste_pitch(img, lay, pitch_background)
+    else:
+        _draw_pitch(draw, lay)
     # Layer 2: team logo watermark (sits on the pitch but under everything else).
     _paste_logos(img, lay, home_logo, away_logo)
     # Layer 3: endzone team-name labels (drawn after logos so the text isn't washed).
@@ -338,6 +344,23 @@ def _targets_for_play(play: PivotalPlay) -> TableauTargets:
     if play.kind == "interception":
         return TableauTargets(scorer=play.player_id)
     return TableauTargets(victim=play.player_id, inflicter=play.inflicter_id)
+
+
+def _paste_pitch(img: Image.Image, lay: Layout, pitch: Image.Image) -> None:
+    """Paste the FFB pitch background onto the canvas.
+
+    The FFB PNGs are 26x15 tiles at 30px each (782x452) and horizontal
+    by convention. For vertical orientation we rotate 90° clockwise so
+    the long axis runs top-to-bottom. The image is then resized to
+    our (pitch_w, pitch_h) so it scales cleanly with our TILE size.
+    """
+    if lay.orientation == "vertical":
+        pitch = pitch.rotate(-90, expand=True, resample=Image.BICUBIC)
+    if pitch.size != (lay.pitch_w, lay.pitch_h):
+        pitch = pitch.resize((lay.pitch_w, lay.pitch_h), resample=Image.LANCZOS)
+    if pitch.mode != "RGBA":
+        pitch = pitch.convert("RGBA")
+    img.paste(pitch, (lay.ox, lay.oy), pitch)
 
 
 def _draw_pitch(draw: ImageDraw.ImageDraw, lay: Layout) -> None:

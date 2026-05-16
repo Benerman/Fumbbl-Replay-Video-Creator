@@ -152,11 +152,18 @@ def main(argv: list[str] | None = None) -> int:
     away_name = analysis.away.name
     home_logo_img = None
     away_logo_img = None
+    pitch_bg = None
     if args.tableaux or args.gifs:
         home_logo_id = _logo_id_from_team(team_home) or _logo_id_from_replay_team(replay, "home")
         away_logo_id = _logo_id_from_team(team_away) or _logo_id_from_replay_team(replay, "away")
         home_logo_img = sprites.fetch_team_logo(home_logo_id)
         away_logo_img = sprites.fetch_team_logo(away_logo_id)
+        # Weather-themed pitch background from FFB's Default.zip.
+        from . import pitches
+        weather = pitches.weather_from_replay(replay)
+        pitch_bg = pitches.fetch_pitch(weather)
+        if pitch_bg is not None:
+            log.info("loaded pitch background for weather %r", weather)
 
     if args.tableaux or args.gifs:
         from . import dice as dice_mod
@@ -197,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
                 home_name=home_name, away_name=away_name,
                 home_logo=home_logo_img, away_logo=away_logo_img,
                 dice=dice_for_play,
+                pitch_background=pitch_bg,
             )
             n += 1
         log.info("rendered %d tableaux to %s", n, args.tableaux)
@@ -214,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
                 orientation=args.orientation,
                 home_name=home_name, away_name=away_name,
                 home_logo=home_logo_img, away_logo=away_logo_img,
+                pitch_background=pitch_bg,
             )
             n += 1
         log.info("rendered %d gifs to %s", n, args.gifs)
