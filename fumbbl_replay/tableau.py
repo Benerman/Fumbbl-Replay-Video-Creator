@@ -195,10 +195,13 @@ def _draw_players(
         cx, cy = lay.bb_to_screen(x, y)
         r = TILE // 2 - 3
         sprite_pair = sprites.get(pid)
+        # Match FFB: base state is the low BYTE of the bitmask; "moving"
+        # sprite is used only when base == MOVING (2). The ACTIVE bit
+        # (0x100) is set for every player on the team that holds the
+        # turn — it's not a "currently being moved" signal.
         raw_state = state.player_states.get(pid, 0) or 0
-        base_state = raw_state & 0xF
-        is_active = bool(raw_state & 0x100)
-        is_moving = base_state == _STATE_MOVING or is_active
+        base_state = raw_state & 0xFF
+        is_moving = base_state == _STATE_MOVING
         is_prone = base_state in _PRONE_STATES
         is_stunned = base_state == _STATE_STUNNED
         is_dead = base_state in (_STATE_KO, _STATE_BH, _STATE_SI, _STATE_RIP)
@@ -207,12 +210,15 @@ def _draw_players(
             ring_r = r + (5 if sprite_pair else 4)
             draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], fill=HIGHLIGHT)
 
-        # Faint team-colour disc: low alpha so it doesn't dominate the sprite.
-        disc_r = r + 1
-        _faint_disc(img, cx, cy, disc_r, color, alpha=70)
+        # Team-colour ring under the sprite. A thin outline (no fill)
+        # avoids the muddy red+green composite the faint-disc approach
+        # produced - the sprite sits cleanly inside a clear colour band.
+        ring_r = r + 1
+        draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r],
+                     outline=color, width=2)
 
         if sprite_pair:
-            sprite = sprite_pair["moving" if is_moving and not is_prone and not is_stunned else "still"]
+            sprite = sprite_pair["moving" if is_moving else "still"]
             sw, sh = sprite.size
             scale = (TILE - 4) / max(sw, sh)
             sprite_resized = sprite.resize((max(1, int(sw * scale)), max(1, int(sh * scale))),
