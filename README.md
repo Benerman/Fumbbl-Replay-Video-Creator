@@ -78,6 +78,12 @@ python -m fumbbl_replay 4700842 --tableaux out/tableaux
 # Render an animated GIF of each pivotal play's run-up
 python -m fumbbl_replay 4700842 --gifs out/gifs
 
+# Add LLM-written commentary lines per pivotal play (calls Claude API; needs ANTHROPIC_API_KEY)
+python -m fumbbl_replay 4700842 --commentary
+
+# Skip the FUMBBL position sprite fetch (use plain coloured tokens instead)
+python -m fumbbl_replay 4700842 --tableaux out/tableaux --no-sprites
+
 # Skip the replay step, use just summary totals (no player names, no turn)
 python -m fumbbl_replay 1901135 --no-replay
 ```
@@ -96,8 +102,10 @@ fumbbl_replay/
   events.py       - parse gameLog.commandArray -> typed event timeline + in-game roster
   analyzer.py     - score pivotal plays; fall back to summary totals if no events
   field_state.py  - reconstruct player + ball positions at any commandNr
-  tableau.py      - render a single pivotal play to PNG (spike: pitch + tokens)
+  tableau.py      - render a single pivotal play to PNG (uses sprites when available)
   animate.py      - render an animated GIF of a play's run-up
+  sprites.py      - fetch + crop FUMBBL position icon sheets per player (cached on disk)
+  commentary.py   - generate one whimsical commentary line per pivotal play (Claude API)
 scripts/
   build_overview.py - regenerate docs/overview.html
 ```
@@ -115,8 +123,9 @@ scripts/
 | Match summary fallback analyzer                                          | done   |
 | Pixel-art tableau spike (pitch + tokens at saved coords)                 | done   |
 | Animated GIFs of pivotal plays                                            | done   |
-| Pixel-art tableau visual identity (sprites, art direction)               | todo   |
-| LLM commentary script + TTS narration                                    | todo   |
+| FUMBBL position sprites in tableaux                                       | done   |
+| LLM commentary script (one line per pivotal play, Claude API)             | done   |
+| TTS narration                                                             | todo   |
 | ffmpeg compose final mp4                                                 | todo   |
 
 ## License

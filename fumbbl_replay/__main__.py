@@ -46,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Render an animated GIF per pivotal play into this directory")
     parser.add_argument("--no-sprites", action="store_true",
                         help="Skip the FUMBBL position sprite fetch; render plain coloured tokens")
+    parser.add_argument("--commentary", action="store_true",
+                        help="Generate one whimsical commentary line per pivotal play (calls Claude API; needs ANTHROPIC_API_KEY)")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -86,10 +88,22 @@ def main(argv: list[str] | None = None) -> int:
         events=event_list, player_lookup=player_lookup,
     )
 
+    commentary_lines: dict[int, str] = {}
+    if args.commentary:
+        from . import commentary
+        try:
+            commentary_lines = commentary.generate_commentary(analysis)
+            log.info("got commentary for %d/%d plays", len(commentary_lines), len(analysis.pivotal))
+        except Exception as e:
+            log.warning("commentary generation failed: %s", e)
+
     if args.json:
-        print(json.dumps(dataclasses.asdict(analysis), indent=2))
+        out = dataclasses.asdict(analysis)
+        if commentary_lines:
+            out["commentary"] = {str(k): v for k, v in commentary_lines.items()}
+        print(json.dumps(out, indent=2))
     else:
-        print(analyzer.format_report(analysis))
+        print(analyzer.format_report(analysis, commentary=commentary_lines))
 
     if (args.tableaux or args.gifs) and replay is None:
         log.warning("--tableaux/--gifs require the replay event log; skipping (--no-replay was set)")
