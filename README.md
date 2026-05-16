@@ -87,6 +87,9 @@ python -m fumbbl_replay 4700842 --tts out/audio
 python -m fumbbl_replay 4700842 --tts out/audio --tts-voice "Reed"
 python -m fumbbl_replay 4700842 --tts out/audio --tts-backend openai --tts-voice nova
 
+# Pull FFB game SFX (cheers, thuds, whistles, crowd boos) per pivotal play
+python -m fumbbl_replay 4700842 --sounds out/sfx
+
 # Skip the FUMBBL position sprite fetch (use plain coloured tokens instead)
 python -m fumbbl_replay 4700842 --tableaux out/tableaux --no-sprites
 
@@ -116,6 +119,7 @@ fumbbl_replay/
   dice.py         - extract + render block / armor / injury dice; fetches FFB's PNGs
   pitches.py     - weather-themed pitch backgrounds from FFB's Default pitch set
   tts.py          - synthesise commentary lines to audio (macOS say / pyttsx3 / OpenAI)
+  sounds.py       - per-play FFB game SFX (td.ogg / specCheer / injury / specHurt / ...)
 scripts/
   build_overview.py - regenerate docs/overview.html
 ```

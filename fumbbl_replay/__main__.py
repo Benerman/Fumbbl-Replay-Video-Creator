@@ -59,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Override base URL for ollama/openai backends (e.g. http://localhost:11434)")
     parser.add_argument("--tts", type=Path, default=None,
                         help="Generate per-play TTS audio into this directory (forces --commentary)")
+    parser.add_argument("--sounds", type=Path, default=None,
+                        help="Copy FFB game-event SFX (cheers, thuds, whistles) into this directory")
     parser.add_argument("--tts-backend", choices=("say", "pyttsx3", "openai"), default=None,
                         help="TTS backend (default: say on macOS; env: FUMBBL_TTS_BACKEND)")
     parser.add_argument("--tts-voice", default=None,
@@ -148,6 +150,16 @@ def main(argv: list[str] | None = None) -> int:
             log.info("rendered %d audio clips to %s", len(audio_paths), args.tts)
         except Exception as e:
             log.warning("TTS generation failed: %s", e)
+
+    if args.sounds:
+        from . import sounds as sounds_mod
+        try:
+            sfx_paths = sounds_mod.install_play_sounds(analysis.pivotal, args.sounds)
+            total = sum(len(v) for v in sfx_paths.values())
+            log.info("installed %d SFX files for %d plays into %s",
+                     total, len(sfx_paths), args.sounds)
+        except Exception as e:
+            log.warning("SFX install failed: %s", e)
 
     if args.json:
         out = dataclasses.asdict(analysis)
