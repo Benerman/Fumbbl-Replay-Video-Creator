@@ -48,8 +48,9 @@ _PRONE_STATES = {_STATE_PRONE, _STATE_BLOCKED, _STATE_FALLING, _STATE_HIT_GROUND
 # Marker colours: a bright red the FFB client uses.
 _MARKER_COLOR = (235, 40, 35)
 _MARKER_WIDTH = 3
-# Margins around the pitch.
-MARGIN_X = 20
+# Margins around the pitch. MARGIN_X needs to fit two-digit coord labels
+# (numbers 1-12 down each side / along each edge).
+MARGIN_X = 30
 MARGIN_TOP = 50
 CAPTION_H = 70
 # Field colours.
@@ -99,17 +100,24 @@ class Layout:
                 self.oy + bb_y * TILE + TILE // 2)
 
 
+_COORD_BAND = 16  # px reserved above/below the pitch for row labels (horizontal layout)
+
+
 def _layout(orientation: str) -> Layout:
     if orientation == "vertical":
         cols, rows = PITCH_HEIGHT, PITCH_WIDTH       # 15 × 26
+        oy = MARGIN_TOP
+        extra_h = 0
     else:
         cols, rows = PITCH_WIDTH, PITCH_HEIGHT       # 26 × 15
+        oy = MARGIN_TOP + _COORD_BAND                # leave room for labels above the pitch
+        extra_h = 2 * _COORD_BAND                    # and below
     pitch_w = cols * TILE
     pitch_h = rows * TILE
     img_w = pitch_w + 2 * MARGIN_X
-    img_h = pitch_h + MARGIN_TOP + CAPTION_H
+    img_h = pitch_h + MARGIN_TOP + CAPTION_H + extra_h
     return Layout(orientation, cols, rows, pitch_w, pitch_h,
-                   MARGIN_X, MARGIN_TOP, img_w, img_h)
+                   MARGIN_X, oy, img_w, img_h)
 
 
 def render_tableau(
@@ -149,6 +157,8 @@ def render_tableau(
     _paste_logos(img, lay, home_logo, away_logo)
     # Layer 3: endzone team-name labels (drawn after logos so the text isn't washed).
     _draw_endzone_labels(img, draw, lay, home_name, away_name, endzone_font)
+    # Layer 3b: row coordinate labels along the long-axis sides of the pitch.
+    _draw_coord_labels(draw, lay, _font(10))
     # Layer 4: header bar above the pitch.
     draw.text((lay.ox, 14), _header_text(play), fill=TEXT, font=font)
     # Layer 5: ball.
@@ -259,7 +269,10 @@ def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
 
 def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> None:
     weight_str = f"[{play.weight:.2f}]"
-    cap_y = lay.oy + lay.pitch_h + 8
+    # In horizontal mode the row labels occupy the band immediately below
+    # the pitch, so the caption needs to start below that.
+    band = _COORD_BAND if lay.orientation == "horizontal" else 0
+    cap_y = lay.oy + lay.pitch_h + band + 8
     draw.text((lay.ox, cap_y), weight_str, fill=DIM_TEXT, font=font)
     wt_w, _ = _text_size(draw, weight_str, font)
     caption_x = lay.ox + wt_w + 6
@@ -359,6 +372,41 @@ def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bo
     rotated = tmp.rotate(90, expand=True, resample=Image.BICUBIC)
     rw, rh = rotated.size
     img.alpha_composite(rotated, (ox + (w - rw) // 2, oy + (h - rh) // 2))
+
+
+def _draw_coord_labels(draw: ImageDraw.ImageDraw, lay: Layout, font) -> None:
+    """Row numbers along the long axis of the pitch.
+
+    Each half counts 1..12 from its endzone toward the line of scrimmage.
+    Home labels are in HOME_COLOR (top in vertical / left in horizontal),
+    away labels in AWAY_COLOR. Endzones themselves (BB x=0, 25) carry the
+    team-name labels already and don't get numbered.
+
+    The 24 numbered rows are: BB x=1..12 (home side, labels 1..12) and
+    BB x=13..24 (away side, labels 12..1, mirroring across the LoS).
+    """
+    for bb_x in range(1, PITCH_WIDTH - 1):
+        if bb_x <= 12:
+            label = str(bb_x)
+            color = HOME_COLOR
+        else:
+            label = str(25 - bb_x)
+            color = AWAY_COLOR
+        tw, th = _text_size(draw, label, font)
+        if lay.orientation == "vertical":
+            # Centre of the row on the long axis.
+            y_centre = lay.oy + bb_x * TILE + TILE // 2 - th // 2
+            # Left side of pitch (right-aligned to the pitch edge).
+            draw.text((lay.ox - tw - 6, y_centre), label, fill=color, font=font)
+            # Right side (left-aligned to the pitch edge).
+            draw.text((lay.ox + lay.pitch_w + 6, y_centre), label, fill=color, font=font)
+        else:
+            # Centre of the column on the long axis (horizontally).
+            x_centre = lay.ox + bb_x * TILE + TILE // 2 - tw // 2
+            # Above the pitch (within the reserved coord band).
+            draw.text((x_centre, lay.oy - _COORD_BAND + 2), label, fill=color, font=font)
+            # Below the pitch.
+            draw.text((x_centre, lay.oy + lay.pitch_h + 2), label, fill=color, font=font)
 
 
 def _paste_logos(
