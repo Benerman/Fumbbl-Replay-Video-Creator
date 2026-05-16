@@ -96,11 +96,36 @@ def render_play_gif(
     if len(interesting_cmds) > max_frames:
         interesting_cmds = interesting_cmds[-max_frames:]
 
+    # Pre-extract dice for EVERY command in the window (not just the
+    # field-affecting ones), keyed by cmd_nr. The block roll often fires
+    # in a command that doesn't change field model state (so it wouldn't
+    # otherwise make `interesting_cmds`), but we still want the dice to
+    # appear on the next rendered frame and linger.
+    from . import dice as dice_mod
+    DICE_LINGER_FRAMES = 6
+    rolls_by_cmd: dict[int, list] = {}
+    for c in cmds:
+        cn = int(c.get("commandNr", 0) or 0)
+        if cn < start or cn > end:
+            continue
+        groups = dice_mod.extract_for_command(replay, cn, lookback=0)
+        if groups:
+            rolls_by_cmd[cn] = groups
+
     # Render frames. The final frame uses the play's static stop_at.
     frames: list[Image.Image] = []
+    active_dice: list[tuple[int, list]] = []
+    prev_cn = -1
     for i, cn in enumerate(interesting_cmds):
         is_last = i == len(interesting_cmds) - 1
         state = reconstruct_at(replay, cn, stop_at=last_stop if is_last else None)
+        # Catch up any dice rolls that fired between the last frame's cmd
+        # and this frame's cmd. They attach to this frame and start
+        # lingering from here.
+        for roll_cn in sorted(rolls_by_cmd):
+            if prev_cn < roll_cn <= cn:
+                active_dice.append((DICE_LINGER_FRAMES, rolls_by_cmd[roll_cn]))
+        visible_dice = [g for _, groups in active_dice for g in groups]
         img_path = out_path.with_suffix(f".frame{i:03d}.png")
         render_tableau(
             play, state, player_lookup, img_path,
@@ -108,9 +133,12 @@ def render_play_gif(
             orientation=orientation,
             home_name=home_name, away_name=away_name,
             home_logo=home_logo, away_logo=away_logo,
+            dice=visible_dice or None,
         )
         frames.append(Image.open(img_path).convert("P", palette=Image.ADAPTIVE))
-        img_path.unlink()  # keep only the GIF
+        img_path.unlink()
+        active_dice = [(n - 1, g) for n, g in active_dice if n - 1 > 0]
+        prev_cn = cn
 
     durations = [frame_ms] * len(frames)
     durations[-1] = max(frame_ms, final_pause_ms)
