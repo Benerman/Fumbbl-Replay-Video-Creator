@@ -5,93 +5,80 @@ into a 3-5 minute whimsical highlight reel with retro pixel-art
 visuals, AI-written commentary, TTS narration, chiptune SFX, and stat
 cards.
 
-## Current state: pivotal-play analyzer
+## Current state: replay fetcher
 
-The first piece is a CLI that, given a FUMBBL match id, prints the
-plays that mattered most plus the assets we have to draw with (team
-logos, player portraits):
+The data foundation: pull a full replay from FUMBBL via the FFB websocket
+protocol, the same way the official Java client does it. This is the
+only source of the rich per-turn event log (who scored each TD, every
+dice roll, every casualty).
 
-```
-$ python -m fumbbl_replay 4700555
+### How the protocol works
 
-  #4700555 (2026-05-15, League) Karag Dum Doomkillers [Chaos Renegade, TheRedoubt] 1 - 0 Norse 10 From Averone [Norse, Mully]
-  ---------------------------------------------------------------------------------------------------------------------------
-  Winner: Karag Dum Doomkillers (by 1)
+1. The user gives us a FFB launcher `.jnlp` (URL or file).
+2. We parse out `gameId`, `host`, `port`, and `coach`.
+3. We open `ws://{host}:{port}/command` and send one message:
+   ```json
+   {"netCommandId":"clientReplay","gameId":1901135,"replayToCommandNr":0,"coach":"spectator"}
+   ```
+   `replayToCommandNr: 0` means "no upper bound — send the whole replay."
+4. The server streams the entire game log back as a sequence of
+   `serverReplay` messages, each carrying a `commandArray` of up to 100
+   inner `ServerCommand`s plus a `totalNrOfCommands` and a
+   `lastCommand: true|false` flag. We loop until `lastCommand: true`.
 
-  Karag Dum Doomkillers (Chaos Renegade, coach TheRedoubt) - TV 1440k
-     logo: https://fumbbl.com/i/752241
-     roster: 13 players
-     casualties suffered: BH=1 SI=1 RIP=0
+Each inner ServerCommand is either a `serverModelSync` (deltas to game
+state) or carries a `reportList.reports` containing event-typed
+entries (touchdowns, injuries, dice rolls, kickoff results, etc.).
 
-  Norse 10 From Averone (Norse, coach Mully) - TV 1350k
-     roster: 12 players
-     casualties suffered: BH=1 SI=2 RIP=0
-
-  Pivotal plays (6):
-     1. [1.00] Karag Dum Doomkillers scored a touchdown
-     2. [0.50] Karag Dum Doomkillers had a player seriously injured
-     3. [0.50] Norse 10 From Averone had a player seriously injured
-     4. [0.50] Norse 10 From Averone had a player seriously injured
-     5. [0.20] Karag Dum Doomkillers had a player knocked out
-     6. [0.20] Norse 10 From Averone had a player knocked out
-```
-
-`--json` mode emits the full structured analysis (each pivotal play,
-each player on each team with portrait URLs, etc.) for downstream tools.
-
-### How it works
-
-1. **`fumbbl_api.py`** wraps the two endpoints we need:
-   - `GET /api/match/get/{id}` for the match summary (teams, score, casualties)
-   - `GET /api/team/get/{id}` for the team roster + bio (logo, players)
-   - `image_url(id)` builds the `https://fumbbl.com/i/{id}` asset URL
-     that serves logos and portraits as PNGs.
-2. **`analyzer.py`** scores plays by win-probability impact:
-   touchdowns at 1.0, kills (RIP) at 0.8, serious injuries at 0.5,
-   knock-outs at 0.2. It returns a `MatchAnalysis` containing both
-   teams (with logo/portrait URLs) and the ranked play list.
-
-### What we know and don't know
-
-We **do** have, per match, from plain HTTP:
-- Final score, division, date
-- Both teams' name, race, coach, team value
-- Both teams' casualty box-score (BH/SI/RIP counts)
-- Both teams' full current roster, each player's name, number,
-  position, skills, and a portrait image URL
-- Team logo image URL
-
-We **don't** have, via plain HTTP:
-- Per-turn pitch positions
-- Who scored each touchdown
-- Who suffered each casualty (the roster gives current state, not the
-  per-match snapshot)
-- Dice rolls
-
-That richer event log lives behind the FFB websocket on port 22223
-(not currently used). So today's analyzer ranks plays at the
-team level, not the player level.
-
-## Roadmap
-
-| Stage                                       | Status  |
-|---------------------------------------------|---------|
-| Match id input, summary + roster fetch      | done    |
-| Rank pivotal plays from team-level data     | done    |
-| Surface logo + portrait asset URLs          | done    |
-| Pull per-turn event log via FFB websocket   | todo    |
-| Render stylized pitch tableaux per play     | todo    |
-| LLM commentary script + TTS narration       | todo    |
-| ffmpeg compose final mp4                    | todo    |
-
-## Install / run
+### Usage
 
 ```bash
 pip install -r requirements.txt
-python -m fumbbl_replay 4700555
-python -m fumbbl_replay 4700555 --json
-python -m fumbbl_replay 4700555 --no-rosters   # skip the two roster GETs
+
+# Fetch the full replay and dump it to NDJSON for inspection.
+python -m fumbbl_replay fetch \
+    https://fumbbl.com/ffblive.jnlp?replay=1901135 \
+    --dump out/1901135.ndjson
+
+# Or from a JNLP you've saved locally:
+python -m fumbbl_replay fetch ./replay-1901135.jnlp --dump out/1901135.ndjson
+
+# Quick analysis straight from FUMBBL's match-summary API (no websocket):
+python -m fumbbl_replay summary 4700555
 ```
+
+### Network reachability
+
+The `fetch` subcommand connects to `fumbbl.com:22223`. That port is
+firewalled from many cloud sandboxes (including this repo's CI/Codespaces
+environments), but is reachable from a normal home/office machine. If you
+get a timeout, run from somewhere outside the cloud.
+
+### Module layout
+
+```
+fumbbl_replay/
+  jnlp_loader.py    - parse JNLP (URL or file) -> JnlpReplayInfo
+  ffb_client.py     - speak the FFB ws protocol, return all server messages
+  fumbbl_api.py     - the public /api/match + /api/team JSON endpoints
+  analyzer.py       - pivotal-play scoring from match summary (current
+                       fallback; will be rebuilt on real event data)
+  __main__.py       - CLI: `fetch` (websocket) and `summary` (API only)
+```
+
+## Roadmap
+
+| Stage                                                                   | Status |
+|-------------------------------------------------------------------------|--------|
+| Parse JNLP (URL or file) -> connection params                           | done   |
+| FFB websocket client: send clientReplay, collect all batches            | done   |
+| CLI dump replay to NDJSON                                                | done   |
+| Match summary fallback analyzer                                          | done   |
+| Parse server commands into a typed event timeline                       | next   |
+| Identify pivotal plays with player names + turn numbers                  | next   |
+| Render stylized pixel-art tableaux per play                              | todo   |
+| LLM commentary script + TTS narration                                    | todo   |
+| ffmpeg compose final mp4                                                 | todo   |
 
 ## License
 
