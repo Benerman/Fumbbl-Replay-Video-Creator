@@ -26,18 +26,22 @@ from typing import Iterable
 log = logging.getLogger(__name__)
 
 # Mix offsets / volumes (ms / linear gain).
+# Voice is the primary; SFX sit underneath as a backdrop. Volumes
+# below are tuned to make the commentary clearly the foreground.
 SFX_THUD_DELAY_MS = 0
 SFX_CROWD_DELAY_MS = 500
 # Give the SFX a proper beat to land before the commentary starts.
 TTS_PRIMARY_DELAY_MS = 1800
-# Gap between play-by-play and colour-commentator reaction.
-TTS_BANTER_GAP_MS = 350
-SFX_THUD_VOLUME = 0.85
-SFX_CROWD_VOLUME = 0.55
+# Gap between play-by-play and colour-commentator reaction. Longer
+# pause so each phrase gets room to breathe.
+TTS_BANTER_GAP_MS = 750
+# SFX volumes pulled WAY down so they don't drown the voice.
+SFX_THUD_VOLUME = 0.35
+SFX_CROWD_VOLUME = 0.22
 TTS_VOLUME = 1.0
-# After the last input ends, pad the mix with a touch of silence so
-# the crowd doesn't clip mid-cheer in some encoders.
-TAIL_PAD_MS = 400
+# Tail pad after the last input ends so the crowd doesn't clip
+# mid-cheer in some encoders.
+TAIL_PAD_MS = 600
 
 
 def _audio_duration_ms(path: Path) -> int:
