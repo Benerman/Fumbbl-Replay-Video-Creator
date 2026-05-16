@@ -132,6 +132,7 @@ def render_tableau(
     away_name: str | None = None,
     home_logo: Image.Image | None = None,
     away_logo: Image.Image | None = None,
+    dice: list | None = None,
 ) -> Path:
     """Render one pivotal-play tableau.
 
@@ -165,7 +166,10 @@ def render_tableau(
     _draw_ball(draw, lay, state)
     # Layer 6: players + their state markers + the highlight ring.
     _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
-    # Layer 7: caption strip.
+    # Layer 7: dice rolls that produced this play, positioned over the actor.
+    if dice:
+        _draw_dice(img, lay, state, dice, targets, tiny)
+    # Layer 8: caption strip.
     _draw_caption(draw, lay, play, state, font, small)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -265,6 +269,34 @@ def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
     overlay = Image.new("RGBA", (r * 2 + 2, r * 2 + 2), (0, 0, 0, 0))
     ImageDraw.Draw(overlay).ellipse([0, 0, r * 2, r * 2], fill=color + (alpha,))
     img.alpha_composite(overlay, (cx - r, cy - r))
+
+
+def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,
+                dice: list, targets: "TableauTargets", font) -> None:
+    """Stamp dice icons above the actor/inflicter for each DiceGroup."""
+    from . import dice as dice_mod
+    if not dice:
+        return
+    for group in dice:
+        # Pick the anchor: the rolling player, falling back to the highlighted
+        # player when the report didn't carry an explicit actor id.
+        anchor_pid = group.actor_id or targets.inflicter or targets.scorer or targets.victim
+        anchor_pos = state.players.get(anchor_pid or "")
+        if not anchor_pos:
+            continue
+        ax, ay = anchor_pos
+        if not (0 <= ax < PITCH_WIDTH and 0 <= ay < PITCH_HEIGHT):
+            continue
+        cx, cy = lay.bb_to_screen(ax, ay)
+        strip = dice_mod.render_group_strip(group, font=font)
+        sw, sh = strip.size
+        # Sit the strip just above the player token (TILE/2 + small offset).
+        sx = cx - sw // 2
+        sy = cy - TILE // 2 - sh - 1
+        # Clamp inside the pitch.
+        sx = max(lay.ox + 2, min(sx, lay.ox + lay.pitch_w - sw - 2))
+        sy = max(lay.oy + 2, sy)
+        img.alpha_composite(strip, (sx, sy))
 
 
 def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> None:
