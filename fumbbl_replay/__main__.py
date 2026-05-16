@@ -49,7 +49,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--orientation", choices=("vertical", "horizontal"), default="vertical",
                         help="Pitch orientation in tableaux/GIFs (default: vertical)")
     parser.add_argument("--commentary", action="store_true",
-                        help="Generate one whimsical commentary line per pivotal play (calls Claude API; needs ANTHROPIC_API_KEY)")
+                        help="Generate one whimsical commentary line per pivotal play")
+    parser.add_argument("--commentary-backend", choices=("ollama", "openai", "claude"),
+                        default=None,
+                        help="LLM backend for commentary (default: ollama; env: FUMBBL_COMMENTARY_BACKEND)")
+    parser.add_argument("--commentary-model", default=None,
+                        help="Model name for the chosen backend (default per backend; env: FUMBBL_COMMENTARY_MODEL)")
+    parser.add_argument("--commentary-base-url", default=None,
+                        help="Override base URL for ollama/openai backends (e.g. http://localhost:11434)")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -112,7 +119,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.commentary:
         from . import commentary
         try:
-            commentary_lines = commentary.generate_commentary(analysis)
+            commentary_lines = commentary.generate_commentary(
+                analysis,
+                backend=args.commentary_backend,
+                model=args.commentary_model,
+                base_url=args.commentary_base_url,
+            )
             log.info("got commentary for %d/%d plays", len(commentary_lines), len(analysis.pivotal))
         except Exception as e:
             log.warning("commentary generation failed: %s", e)
@@ -140,11 +152,21 @@ def main(argv: list[str] | None = None) -> int:
     away_name = analysis.away.name
     home_logo_img = None
     away_logo_img = None
+    pitch_bg = None
     if args.tableaux or args.gifs:
         home_logo_id = _logo_id_from_team(team_home) or _logo_id_from_replay_team(replay, "home")
         away_logo_id = _logo_id_from_team(team_away) or _logo_id_from_replay_team(replay, "away")
         home_logo_img = sprites.fetch_team_logo(home_logo_id)
         away_logo_img = sprites.fetch_team_logo(away_logo_id)
+        # Weather-themed pitch background from FFB's Default.zip.
+        from . import pitches
+        weather = pitches.weather_from_replay(replay)
+        pitch_bg = pitches.fetch_pitch(weather)
+        if pitch_bg is not None:
+            log.info("loaded pitch background for weather %r", weather)
+
+    if args.tableaux or args.gifs:
+        from . import dice as dice_mod
 
     if args.tableaux:
         from . import tableau  # local import: pillow only loaded when needed
@@ -167,12 +189,22 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 state = field_state.reconstruct_at(replay, p.command_nr)
             out = args.tableaux / f"{i:02d}_{p.kind}_{p.command_nr}.png"
+            # Casualties: the originating block fired in an earlier cmd, so
+            # look back. Blunders (double/triple skull, clutch fail) have the
+            # roll in the event cmd itself. TDs and interceptions: scan a
+            # short window for the dodges/GFIs that set up the play.
+            lookback = {"casualty": 8, "touchdown": 8, "interception": 4,
+                         "self_kill": 4, "clutch_fail": 0,
+                         "double_skull": 0, "triple_skull": 0}.get(p.kind, 0)
+            dice_for_play = dice_mod.extract_for_command(replay, p.command_nr, lookback=lookback)
             tableau.render_tableau(
                 p, state, player_lookup or {}, out,
                 sprites=player_sprites,
                 orientation=args.orientation,
                 home_name=home_name, away_name=away_name,
                 home_logo=home_logo_img, away_logo=away_logo_img,
+                dice=dice_for_play,
+                pitch_background=pitch_bg,
             )
             n += 1
         log.info("rendered %d tableaux to %s", n, args.tableaux)
@@ -190,6 +222,7 @@ def main(argv: list[str] | None = None) -> int:
                 orientation=args.orientation,
                 home_name=home_name, away_name=away_name,
                 home_logo=home_logo_img, away_logo=away_logo_img,
+                pitch_background=pitch_bg,
             )
             n += 1
         log.info("rendered %d gifs to %s", n, args.gifs)

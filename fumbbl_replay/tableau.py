@@ -48,8 +48,9 @@ _PRONE_STATES = {_STATE_PRONE, _STATE_BLOCKED, _STATE_FALLING, _STATE_HIT_GROUND
 # Marker colours: a bright red the FFB client uses.
 _MARKER_COLOR = (235, 40, 35)
 _MARKER_WIDTH = 3
-# Margins around the pitch.
-MARGIN_X = 20
+# Margins around the pitch. MARGIN_X needs to fit two-digit coord labels
+# (numbers 1-12 down each side / along each edge).
+MARGIN_X = 30
 MARGIN_TOP = 50
 CAPTION_H = 70
 # Field colours.
@@ -99,17 +100,24 @@ class Layout:
                 self.oy + bb_y * TILE + TILE // 2)
 
 
+_COORD_BAND = 16  # px reserved above/below the pitch for row labels (horizontal layout)
+
+
 def _layout(orientation: str) -> Layout:
     if orientation == "vertical":
         cols, rows = PITCH_HEIGHT, PITCH_WIDTH       # 15 × 26
+        oy = MARGIN_TOP
+        extra_h = 0
     else:
         cols, rows = PITCH_WIDTH, PITCH_HEIGHT       # 26 × 15
+        oy = MARGIN_TOP + _COORD_BAND                # leave room for labels above the pitch
+        extra_h = 2 * _COORD_BAND                    # and below
     pitch_w = cols * TILE
     pitch_h = rows * TILE
     img_w = pitch_w + 2 * MARGIN_X
-    img_h = pitch_h + MARGIN_TOP + CAPTION_H
+    img_h = pitch_h + MARGIN_TOP + CAPTION_H + extra_h
     return Layout(orientation, cols, rows, pitch_w, pitch_h,
-                   MARGIN_X, MARGIN_TOP, img_w, img_h)
+                   MARGIN_X, oy, img_w, img_h)
 
 
 def render_tableau(
@@ -124,6 +132,8 @@ def render_tableau(
     away_name: str | None = None,
     home_logo: Image.Image | None = None,
     away_logo: Image.Image | None = None,
+    dice: list | None = None,
+    pitch_background: Image.Image | None = None,
 ) -> Path:
     """Render one pivotal-play tableau.
 
@@ -143,19 +153,29 @@ def render_tableau(
     tiny = _font(9)
     endzone_font = _font(20 if orientation == "vertical" else 16)
 
-    # Layer 1: pitch base (grass, grid, endzone tint, LoS, wide zones).
-    _draw_pitch(draw, lay)
+    # Layer 1: pitch base. Use the weather-themed FFB pitch PNG when
+    # we have one (full bitmap with LoS + hash marks baked in); fall
+    # back to procedural drawing otherwise.
+    if pitch_background is not None:
+        _paste_pitch(img, lay, pitch_background)
+    else:
+        _draw_pitch(draw, lay)
     # Layer 2: team logo watermark (sits on the pitch but under everything else).
     _paste_logos(img, lay, home_logo, away_logo)
     # Layer 3: endzone team-name labels (drawn after logos so the text isn't washed).
     _draw_endzone_labels(img, draw, lay, home_name, away_name, endzone_font)
+    # Layer 3b: row coordinate labels along the long-axis sides of the pitch.
+    _draw_coord_labels(img, lay, _font(11))
     # Layer 4: header bar above the pitch.
     draw.text((lay.ox, 14), _header_text(play), fill=TEXT, font=font)
     # Layer 5: ball.
     _draw_ball(draw, lay, state)
     # Layer 6: players + their state markers + the highlight ring.
     _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
-    # Layer 7: caption strip.
+    # Layer 7: dice rolls that produced this play, positioned over the actor.
+    if dice:
+        _draw_dice(img, lay, state, dice, targets, tiny)
+    # Layer 8: caption strip.
     _draw_caption(draw, lay, play, state, font, small)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -257,9 +277,53 @@ def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
     img.alpha_composite(overlay, (cx - r, cy - r))
 
 
+def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,
+                dice: list, targets: "TableauTargets", font) -> None:
+    """Stamp dice icons above the actor for each DiceGroup. Multiple
+    groups sharing an anchor stack VERTICALLY (block on top, armor in
+    the middle, injury at the bottom) so they don't overlap."""
+    from . import dice as dice_mod
+    if not dice:
+        return
+    # Bucket groups by anchor first; render each bucket as a stack.
+    buckets: dict[str, list] = {}
+    fallback = targets.inflicter or targets.scorer or targets.victim
+    for group in dice:
+        anchor_pid = group.actor_id or fallback
+        if not anchor_pid:
+            continue
+        buckets.setdefault(anchor_pid, []).append(group)
+    for anchor_pid, groups in buckets.items():
+        anchor_pos = state.players.get(anchor_pid)
+        if not anchor_pos:
+            continue
+        ax, ay = anchor_pos
+        if not (0 <= ax < PITCH_WIDTH and 0 <= ay < PITCH_HEIGHT):
+            continue
+        cx, cy = lay.bb_to_screen(ax, ay)
+        # Render each strip, top-aligned upwards from the player token.
+        strips = [dice_mod.render_group_strip(g, font=font) for g in groups]
+        gap = 2
+        total_h = sum(s.size[1] for s in strips) + gap * (len(strips) - 1)
+        max_w = max(s.size[0] for s in strips)
+        # Top edge of the stack sits TILE/2+2 above the token centre.
+        top_y = cy - TILE // 2 - total_h - 2
+        top_y = max(lay.oy + 2, top_y)
+        y = top_y
+        for strip in strips:
+            sw, sh = strip.size
+            sx = cx - sw // 2
+            sx = max(lay.ox + 2, min(sx, lay.ox + lay.pitch_w - sw - 2))
+            img.alpha_composite(strip, (sx, y))
+            y += sh + gap
+
+
 def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> None:
     weight_str = f"[{play.weight:.2f}]"
-    cap_y = lay.oy + lay.pitch_h + 8
+    # In horizontal mode the row labels occupy the band immediately below
+    # the pitch, so the caption needs to start below that.
+    band = _COORD_BAND if lay.orientation == "horizontal" else 0
+    cap_y = lay.oy + lay.pitch_h + band + 8
     draw.text((lay.ox, cap_y), weight_str, fill=DIM_TEXT, font=font)
     wt_w, _ = _text_size(draw, weight_str, font)
     caption_x = lay.ox + wt_w + 6
@@ -280,6 +344,23 @@ def _targets_for_play(play: PivotalPlay) -> TableauTargets:
     if play.kind == "interception":
         return TableauTargets(scorer=play.player_id)
     return TableauTargets(victim=play.player_id, inflicter=play.inflicter_id)
+
+
+def _paste_pitch(img: Image.Image, lay: Layout, pitch: Image.Image) -> None:
+    """Paste the FFB pitch background onto the canvas.
+
+    The FFB PNGs are 26x15 tiles at 30px each (782x452) and horizontal
+    by convention. For vertical orientation we rotate 90° clockwise so
+    the long axis runs top-to-bottom. The image is then resized to
+    our (pitch_w, pitch_h) so it scales cleanly with our TILE size.
+    """
+    if lay.orientation == "vertical":
+        pitch = pitch.rotate(-90, expand=True, resample=Image.BICUBIC)
+    if pitch.size != (lay.pitch_w, lay.pitch_h):
+        pitch = pitch.resize((lay.pitch_w, lay.pitch_h), resample=Image.LANCZOS)
+    if pitch.mode != "RGBA":
+        pitch = pitch.convert("RGBA")
+    img.paste(pitch, (lay.ox, lay.oy), pitch)
 
 
 def _draw_pitch(draw: ImageDraw.ImageDraw, lay: Layout) -> None:
@@ -331,7 +412,9 @@ def _draw_endzone_labels(
 ) -> None:
     """Stamp team names in the endzones. Home defends one endzone, away
     the other; in vertical layout home is on top, in horizontal layout
-    home is on the left (rotated so it reads up the endzone)."""
+    home is on the left (rotated so it reads up the endzone). Each
+    label sits on a dark opaque strip so it stays legible regardless
+    of the underlying pitch texture (rain / blizzard / heat etc.)."""
     ox, oy = lay.ox, lay.oy
     if lay.orientation == "vertical":
         home_box = (ox, oy, lay.pitch_w, TILE)
@@ -348,7 +431,12 @@ def _draw_endzone_labels(
 
 
 def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bool):
-    """Centre-render text inside a box; rotate 90° if requested."""
+    """Render text in a box on an opaque dark strip so it pops against
+    any pitch texture. Rotate 90° if the box is taller than it is wide."""
+    # Dark backing strip across the whole endzone band.
+    backing = Image.new("RGBA", (w, h), (10, 14, 16, 215))
+    img.alpha_composite(backing, (ox, oy))
+
     if not rotate:
         tw, th = _text_size(draw, text, font)
         draw.text((ox + (w - tw) // 2, oy + (h - th) // 2), text, fill=color, font=font)
@@ -359,6 +447,51 @@ def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bo
     rotated = tmp.rotate(90, expand=True, resample=Image.BICUBIC)
     rw, rh = rotated.size
     img.alpha_composite(rotated, (ox + (w - rw) // 2, oy + (h - rh) // 2))
+
+
+def _draw_coord_labels(img: Image.Image, lay: Layout, font) -> None:
+    """Row numbers along the long axis of the pitch.
+
+    Each half counts 1..12 from its endzone toward the line of scrimmage.
+    Home labels are in HOME_COLOR (top in vertical / left in horizontal),
+    away labels in AWAY_COLOR. Endzones themselves (BB x=0, 25) carry the
+    team-name labels already and don't get numbered.
+
+    Each label sits on a small dark chip so the digits stay readable
+    regardless of where they fall against the canvas/pitch background.
+    """
+    draw = ImageDraw.Draw(img)
+    for bb_x in range(1, PITCH_WIDTH - 1):
+        if bb_x <= 12:
+            label = str(bb_x)
+            color = HOME_COLOR
+        else:
+            label = str(25 - bb_x)
+            color = AWAY_COLOR
+        tw, th = _text_size(draw, label, font)
+        chip_w, chip_h = max(tw + 6, 18), th + 4
+        if lay.orientation == "vertical":
+            y_centre = lay.oy + bb_x * TILE + TILE // 2 - th // 2
+            # Left side: chip + label, right-aligned to the pitch edge.
+            _chip_label(img, lay.ox - chip_w - 2, y_centre - 2,
+                        chip_w, chip_h, label, color, font, draw)
+            # Right side: chip + label, left-aligned to the pitch edge.
+            _chip_label(img, lay.ox + lay.pitch_w + 2, y_centre - 2,
+                        chip_w, chip_h, label, color, font, draw)
+        else:
+            x_centre = lay.ox + bb_x * TILE + TILE // 2 - tw // 2
+            _chip_label(img, x_centre - 3, lay.oy - _COORD_BAND + 1,
+                        chip_w, chip_h, label, color, font, draw)
+            _chip_label(img, x_centre - 3, lay.oy + lay.pitch_h + 1,
+                        chip_w, chip_h, label, color, font, draw)
+
+
+def _chip_label(img: Image.Image, x: int, y: int, w: int, h: int,
+                 text: str, color, font, draw: ImageDraw.ImageDraw) -> None:
+    chip = Image.new("RGBA", (w, h), (12, 16, 18, 230))
+    img.alpha_composite(chip, (x, y))
+    tw, _ = _text_size(draw, text, font)
+    draw.text((x + (w - tw) // 2, y + 1), text, fill=color, font=font)
 
 
 def _paste_logos(
