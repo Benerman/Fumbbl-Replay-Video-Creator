@@ -59,25 +59,32 @@ def roster_from_replay(replay: dict[str, Any]) -> dict[str, PlayerInfo]:
 @dataclass
 class Event:
     kind: str            # "touchdown" | "kill" | "serious_injury" | "badly_hurt" | "interception"
-    side: str            # "home" | "away" — for TDs/INTs the actor's side; for casualties the victim's side
+                         # | "self_kill" | "triple_skull" | "double_skull" | "clutch_fail"
+    side: str            # "home" | "away" — for TDs/INTs the actor's side; for casualties the victim's side;
+                         # for blunder events, the side that committed the blunder (whose player botched it)
     command_nr: int
     half: int            # 1 or 2 (0 before first half starts)
     turn: int            # team-turn number when the event resolved
     score_home: int = 0  # home score AFTER this event
     score_away: int = 0  # away score AFTER this event
-    player_id: str | None = None       # scorer / victim / interceptor
+    player_id: str | None = None       # scorer / victim / interceptor / blunderer
     inflicter_id: str | None = None    # for casualties: who blocked/fouled the victim
-    detail: str | None = None          # injury label e.g. "Dead (RIP)", "Head Injury (-AV)"
-    reason: str | None = None          # for casualties: "blocked" / "fouled" / "crowdPushed"
+    detail: str | None = None          # injury label, blockRoll string, "x,y" for clutch_fail, etc.
+    reason: str | None = None          # for casualties: "blocked" / "fouled" / "crowdPushed";
+                                       # for self_kill: the originating injuryType (dropGfi / dropDodge / ...)
 
 
 def extract_events(replay: dict[str, Any]) -> list[Event]:
     cmds: Iterable[dict[str, Any]] = replay.get("gameLog", {}).get("commandArray", []) or []
+    player_side = _player_side_map(replay)
     half = 0
     turn_home = 0
     turn_away = 0
     score_home = 0
     score_away = 0
+    home_playing: bool | None = None  # whose turn (True = home, False = away)
+    acting_player_id: str | None = None
+    ball_xy: tuple[int, int] | None = None
     events: list[Event] = []
 
     for c in cmds:
@@ -86,7 +93,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
         changes = c.get("modelChangeList", {}).get("modelChangeArray", []) or []
         cn = int(c.get("commandNr", 0) or 0)
 
-        # Phase 1: update sticky state (half, turn, score) from this command's deltas.
+        # Phase 1: update sticky state (half, turn, score, who's playing, acting player, ball).
         for m in changes:
             mid = m.get("modelChangeId")
             v = m.get("modelChangeValue")
@@ -102,6 +109,12 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                     score_home = v
                 elif m.get("modelChangeKey") == "away":
                     score_away = v
+            elif mid == "gameSetHomePlaying":
+                home_playing = bool(v) if v is not None else home_playing
+            elif mid == "actingPlayerSetPlayerId":
+                acting_player_id = str(v) if v else None
+            elif mid == "fieldModelSetBallCoordinate":
+                ball_xy = (int(v[0]), int(v[1])) if isinstance(v, list) and len(v) == 2 else None
 
         # Phase 2: collect per-command companion fields.
         # The casualty victim is the key of `playerResultSetSeriousInjury`
@@ -182,7 +195,7 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
         # Interception: emit when interceptor seen in this command.
         # The thrower's team loses the ball; the interceptor's side gets the event.
         if interceptor:
-            int_side = _player_side(replay, interceptor)
+            int_side = player_side.get(interceptor)
             if int_side:
                 events.append(Event(
                     kind="interception", side=int_side, command_nr=cn,
@@ -192,7 +205,98 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                     player_id=interceptor,
                 ))
 
+        # Phase 4: scan reportList for "epic fail" events.
+        # The active team is whoever is currently playing; their actingPlayer
+        # is the candidate blunderer for block/pickup events.
+        active_side = "home" if home_playing else "away"
+        active_turn = turn_home if active_side == "home" else turn_away
+        for r in (c.get("reportList") or {}).get("reports") or []:
+            rid = r.get("reportId")
+            if rid == "blockRoll":
+                roll = r.get("blockRoll") or []
+                ones = sum(1 for v in roll if v == 1)
+                if ones == len(roll) and len(roll) >= 2:
+                    # All dice are skulls — pure attacker disaster.
+                    kind = "triple_skull" if len(roll) >= 3 else "double_skull"
+                    events.append(Event(
+                        kind=kind, side=active_side, command_nr=cn,
+                        half=half, turn=active_turn,
+                        score_home=score_home, score_away=score_away,
+                        player_id=acting_player_id,
+                        detail=",".join(str(v) for v in roll),
+                    ))
+                elif ones >= 2:
+                    # Mixed roll with 2+ skulls (e.g. [1, 1, 4]) — still a blunder
+                    events.append(Event(
+                        kind="double_skull", side=active_side, command_nr=cn,
+                        half=half, turn=active_turn,
+                        score_home=score_home, score_away=score_away,
+                        player_id=acting_player_id,
+                        detail=",".join(str(v) for v in roll),
+                    ))
+            elif rid == "injury":
+                # Self-kill: armour-broken-then-cas death triggered by the
+                # player's own action (drop while going for it / dodging /
+                # picking up / falling), not by an opponent's block.
+                injury_type = (r.get("injuryType") or "").lower()
+                serious = (r.get("seriousInjury") or "").upper()
+                self_inflicted = injury_type in {
+                    "dropgfi", "dropdodge", "droppickup", "dropconcentration",
+                    "fall", "drown", "skull",
+                }
+                died = "RIP" in serious or "DEAD" in serious
+                if self_inflicted and died:
+                    victim_pid = str(r.get("defenderId") or "") or None
+                    side = player_side.get(victim_pid or "", active_side)
+                    events.append(Event(
+                        kind="self_kill", side=side, command_nr=cn,
+                        half=half, turn=turn_home if side == "home" else turn_away,
+                        score_home=score_home, score_away=score_away,
+                        player_id=victim_pid,
+                        detail=r.get("seriousInjury"),
+                        reason=r.get("injuryType"),
+                    ))
+            elif rid == "pickUpRoll":
+                if r.get("successful") or r.get("reRolled"):
+                    continue
+                # Clutch fail: failed pickup near an endzone late in a half.
+                # Define "near" as within 4 squares of either endzone column,
+                # and "late" as turn 7 or 8 of the active team.
+                pid = str(r.get("playerId") or "") or None
+                pid_side = player_side.get(pid or "", active_side)
+                if active_turn < 7:
+                    continue
+                if ball_xy is None:
+                    continue
+                bx = ball_xy[0]
+                if not (bx <= 3 or bx >= 22):
+                    continue
+                events.append(Event(
+                    kind="clutch_fail", side=pid_side, command_nr=cn,
+                    half=half, turn=turn_home if pid_side == "home" else turn_away,
+                    score_home=score_home, score_away=score_away,
+                    player_id=pid,
+                    detail=f"ball at ({ball_xy[0]},{ball_xy[1]}); rolled {r.get('roll')} need {r.get('minimumRoll')}",
+                    reason="failedPickup",
+                ))
+
     return events
+
+
+def _player_side_map(replay: dict[str, Any]) -> dict[str, str]:
+    """Pre-build {playerId -> side} from the replay's in-game rosters.
+
+    Avoids walking the rosters twice per event during extraction.
+    """
+    out: dict[str, str] = {}
+    game = replay.get("game") or {}
+    for side in ("home", "away"):
+        team = game.get(f"team{side.capitalize()}") or {}
+        for p in team.get("playerArray") or []:
+            pid = str(p.get("playerId") or "")
+            if pid:
+                out[pid] = side
+    return out
 
 
 def _bh_victim(send_box: dict[str, dict[str, Any]], *, victim_excluded: str | None) -> str | None:
@@ -207,11 +311,3 @@ def _bh_victim(send_box: dict[str, dict[str, Any]], *, victim_excluded: str | No
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _player_side(replay: dict[str, Any], player_id: str) -> str | None:
-    game = replay.get("game") or {}
-    for side in ("home", "away"):
-        team = game.get(f"team{side.capitalize()}") or {}
-        for p in team.get("playerArray") or []:
-            if str(p.get("playerId")) == str(player_id):
-                return side
-    return None

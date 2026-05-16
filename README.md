@@ -124,6 +124,7 @@ scripts/
 | Pixel-art tableau spike (pitch + tokens at saved coords)                 | done   |
 | Animated GIFs of pivotal plays                                            | done   |
 | FUMBBL position sprites in tableaux                                       | done   |
+| Epic-fail events (self-kill, triple/double skull streaks, clutch fumble)  | done   |
 | LLM commentary script (one line per pivotal play, Claude API)             | done   |
 | TTS narration                                                             | todo   |
 | ffmpeg compose final mp4                                                 | todo   |
