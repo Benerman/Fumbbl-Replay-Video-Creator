@@ -75,9 +75,16 @@ python -m fumbbl_replay 1901135 --dump-replay out/1901135.json.gz
 # Render a PNG tableau per pivotal play (spike-quality)
 python -m fumbbl_replay 4700842 --tableaux out/tableaux
 
+# Render an animated GIF of each pivotal play's run-up
+python -m fumbbl_replay 4700842 --gifs out/gifs
+
 # Skip the replay step, use just summary totals (no player names, no turn)
 python -m fumbbl_replay 1901135 --no-replay
 ```
+
+A self-contained project showcase (with embedded sample tableaux and
+a sample animated drive) lives at [`docs/overview.html`](docs/overview.html);
+regenerate with `python -m scripts.build_overview`.
 
 ### Module layout
 
@@ -90,6 +97,9 @@ fumbbl_replay/
   analyzer.py     - score pivotal plays; fall back to summary totals if no events
   field_state.py  - reconstruct player + ball positions at any commandNr
   tableau.py      - render a single pivotal play to PNG (spike: pitch + tokens)
+  animate.py      - render an animated GIF of a play's run-up
+scripts/
+  build_overview.py - regenerate docs/overview.html
 ```
 
 ## Roadmap
@@ -104,6 +114,7 @@ fumbbl_replay/
 | Casualty inflicter + reason (blocked / fouled / crowd-pushed)            | done   |
 | Match summary fallback analyzer                                          | done   |
 | Pixel-art tableau spike (pitch + tokens at saved coords)                 | done   |
+| Animated GIFs of pivotal plays                                            | done   |
 | Pixel-art tableau visual identity (sprites, art direction)               | todo   |
 | LLM commentary script + TTS narration                                    | todo   |
 | ffmpeg compose final mp4                                                 | todo   |
