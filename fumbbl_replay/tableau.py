@@ -165,7 +165,7 @@ def render_tableau(
     # Layer 3: endzone team-name labels (drawn after logos so the text isn't washed).
     _draw_endzone_labels(img, draw, lay, home_name, away_name, endzone_font)
     # Layer 3b: row coordinate labels along the long-axis sides of the pitch.
-    _draw_coord_labels(draw, lay, _font(10))
+    _draw_coord_labels(img, lay, _font(11))
     # Layer 4: header bar above the pitch.
     draw.text((lay.ox, 14), _header_text(play), fill=TEXT, font=font)
     # Layer 5: ball.
@@ -412,7 +412,9 @@ def _draw_endzone_labels(
 ) -> None:
     """Stamp team names in the endzones. Home defends one endzone, away
     the other; in vertical layout home is on top, in horizontal layout
-    home is on the left (rotated so it reads up the endzone)."""
+    home is on the left (rotated so it reads up the endzone). Each
+    label sits on a dark opaque strip so it stays legible regardless
+    of the underlying pitch texture (rain / blizzard / heat etc.)."""
     ox, oy = lay.ox, lay.oy
     if lay.orientation == "vertical":
         home_box = (ox, oy, lay.pitch_w, TILE)
@@ -429,7 +431,12 @@ def _draw_endzone_labels(
 
 
 def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bool):
-    """Centre-render text inside a box; rotate 90° if requested."""
+    """Render text in a box on an opaque dark strip so it pops against
+    any pitch texture. Rotate 90° if the box is taller than it is wide."""
+    # Dark backing strip across the whole endzone band.
+    backing = Image.new("RGBA", (w, h), (10, 14, 16, 215))
+    img.alpha_composite(backing, (ox, oy))
+
     if not rotate:
         tw, th = _text_size(draw, text, font)
         draw.text((ox + (w - tw) // 2, oy + (h - th) // 2), text, fill=color, font=font)
@@ -442,7 +449,7 @@ def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bo
     img.alpha_composite(rotated, (ox + (w - rw) // 2, oy + (h - rh) // 2))
 
 
-def _draw_coord_labels(draw: ImageDraw.ImageDraw, lay: Layout, font) -> None:
+def _draw_coord_labels(img: Image.Image, lay: Layout, font) -> None:
     """Row numbers along the long axis of the pitch.
 
     Each half counts 1..12 from its endzone toward the line of scrimmage.
@@ -450,9 +457,10 @@ def _draw_coord_labels(draw: ImageDraw.ImageDraw, lay: Layout, font) -> None:
     away labels in AWAY_COLOR. Endzones themselves (BB x=0, 25) carry the
     team-name labels already and don't get numbered.
 
-    The 24 numbered rows are: BB x=1..12 (home side, labels 1..12) and
-    BB x=13..24 (away side, labels 12..1, mirroring across the LoS).
+    Each label sits on a small dark chip so the digits stay readable
+    regardless of where they fall against the canvas/pitch background.
     """
+    draw = ImageDraw.Draw(img)
     for bb_x in range(1, PITCH_WIDTH - 1):
         if bb_x <= 12:
             label = str(bb_x)
@@ -461,20 +469,29 @@ def _draw_coord_labels(draw: ImageDraw.ImageDraw, lay: Layout, font) -> None:
             label = str(25 - bb_x)
             color = AWAY_COLOR
         tw, th = _text_size(draw, label, font)
+        chip_w, chip_h = max(tw + 6, 18), th + 4
         if lay.orientation == "vertical":
-            # Centre of the row on the long axis.
             y_centre = lay.oy + bb_x * TILE + TILE // 2 - th // 2
-            # Left side of pitch (right-aligned to the pitch edge).
-            draw.text((lay.ox - tw - 6, y_centre), label, fill=color, font=font)
-            # Right side (left-aligned to the pitch edge).
-            draw.text((lay.ox + lay.pitch_w + 6, y_centre), label, fill=color, font=font)
+            # Left side: chip + label, right-aligned to the pitch edge.
+            _chip_label(img, lay.ox - chip_w - 2, y_centre - 2,
+                        chip_w, chip_h, label, color, font, draw)
+            # Right side: chip + label, left-aligned to the pitch edge.
+            _chip_label(img, lay.ox + lay.pitch_w + 2, y_centre - 2,
+                        chip_w, chip_h, label, color, font, draw)
         else:
-            # Centre of the column on the long axis (horizontally).
             x_centre = lay.ox + bb_x * TILE + TILE // 2 - tw // 2
-            # Above the pitch (within the reserved coord band).
-            draw.text((x_centre, lay.oy - _COORD_BAND + 2), label, fill=color, font=font)
-            # Below the pitch.
-            draw.text((x_centre, lay.oy + lay.pitch_h + 2), label, fill=color, font=font)
+            _chip_label(img, x_centre - 3, lay.oy - _COORD_BAND + 1,
+                        chip_w, chip_h, label, color, font, draw)
+            _chip_label(img, x_centre - 3, lay.oy + lay.pitch_h + 1,
+                        chip_w, chip_h, label, color, font, draw)
+
+
+def _chip_label(img: Image.Image, x: int, y: int, w: int, h: int,
+                 text: str, color, font, draw: ImageDraw.ImageDraw) -> None:
+    chip = Image.new("RGBA", (w, h), (12, 16, 18, 230))
+    img.alpha_composite(chip, (x, y))
+    tw, _ = _text_size(draw, text, font)
+    draw.text((x + (w - tw) // 2, y + 1), text, fill=color, font=font)
 
 
 def _paste_logos(
