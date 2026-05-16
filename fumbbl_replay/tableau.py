@@ -58,18 +58,21 @@ def render_tableau(
     state: FieldState,
     player_lookup: dict[str, PlayerInfo],
     out_path: Path,
+    sprites: dict[str, Image.Image] | None = None,
 ) -> Path:
     targets = _targets_for_play(play)
+    sprites = sprites or {}
 
     pitch_w = PITCH_WIDTH * TILE
     pitch_h = PITCH_HEIGHT * TILE
     img_w = pitch_w + 2 * MARGIN_X
     img_h = pitch_h + MARGIN_TOP + CAPTION_H
 
-    img = Image.new("RGB", (img_w, img_h), (24, 30, 24))
+    img = Image.new("RGBA", (img_w, img_h), (24, 30, 24, 255))
     draw = ImageDraw.Draw(img)
     font = _font(14)
     small = _font(11)
+    tiny = _font(9)
 
     _draw_pitch(draw, MARGIN_X, MARGIN_TOP, pitch_w, pitch_h)
 
@@ -95,14 +98,36 @@ def render_tableau(
         cx = MARGIN_X + x * TILE + TILE // 2
         cy = MARGIN_TOP + y * TILE + TILE // 2
         r = TILE // 2 - 3
+        sprite = sprites.get(pid)
         if pid in involved:
-            draw.ellipse([cx - r - 4, cy - r - 4, cx + r + 4, cy + r + 4], fill=HIGHLIGHT)
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
-        # Number label
-        if info and info.number is not None:
-            label = str(info.number)
-            tw, th = _text_size(draw, label, small)
-            draw.text((cx - tw / 2, cy - th / 2), label, fill=(255, 255, 255), font=small)
+            ring_r = r + (5 if sprite else 4)
+            draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], fill=HIGHLIGHT)
+        if sprite:
+            # Coloured disc behind the sprite for team identification.
+            disc_r = r + 1
+            draw.ellipse([cx - disc_r, cy - disc_r, cx + disc_r, cy + disc_r], fill=color + (255,))
+            sw, sh = sprite.size
+            scale = (TILE - 4) / max(sw, sh)
+            if scale != 1.0:
+                sprite_resized = sprite.resize((max(1, int(sw * scale)), max(1, int(sh * scale))),
+                                                resample=Image.NEAREST)
+            else:
+                sprite_resized = sprite
+            sw, sh = sprite_resized.size
+            img.paste(sprite_resized, (cx - sw // 2, cy - sh // 2), sprite_resized)
+            # Tiny jersey number badge in the bottom-right corner.
+            if info and info.number is not None:
+                label = str(info.number)
+                tw, th = _text_size(draw, label, tiny)
+                bx_, by_ = cx + r - tw - 1, cy + r - th
+                draw.rectangle([bx_ - 1, by_ - 1, bx_ + tw + 1, by_ + th + 1], fill=(0, 0, 0, 200))
+                draw.text((bx_, by_), label, fill=(255, 255, 255), font=tiny)
+        else:
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
+            if info and info.number is not None:
+                label = str(info.number)
+                tw, th = _text_size(draw, label, small)
+                draw.text((cx - tw / 2, cy - th / 2), label, fill=(255, 255, 255), font=small)
 
     # Caption: the play headline.
     caption = play.headline()
@@ -119,7 +144,7 @@ def render_tableau(
                   fill=DIM_TEXT, font=small)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    img.save(out_path)
+    img.convert("RGB").save(out_path)
     return out_path
 
 

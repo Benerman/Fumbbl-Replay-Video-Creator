@@ -27,7 +27,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import analyzer, events, field_state, fumbbl_api, jnlp_loader
+from . import analyzer, events, field_state, fumbbl_api, jnlp_loader, sprites
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Render a PNG tableau per pivotal play into this directory")
     parser.add_argument("--gifs", type=Path, default=None,
                         help="Render an animated GIF per pivotal play into this directory")
+    parser.add_argument("--no-sprites", action="store_true",
+                        help="Skip the FUMBBL position sprite fetch; render plain coloured tokens")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -93,6 +95,12 @@ def main(argv: list[str] | None = None) -> int:
         log.warning("--tableaux/--gifs require the replay event log; skipping (--no-replay was set)")
         return 0
 
+    player_sprites: dict = {}
+    if (args.tableaux or args.gifs) and not args.no_sprites and player_lookup:
+        idx = sprites.position_icon_index_from_replay(replay)
+        player_sprites = sprites.build_player_sprites(player_lookup, idx)
+        log.info("loaded sprites for %d/%d players", len(player_sprites), len(player_lookup))
+
     if args.tableaux:
         from . import tableau  # local import: pillow only loaded when needed
         n = 0
@@ -114,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 state = field_state.reconstruct_at(replay, p.command_nr)
             out = args.tableaux / f"{i:02d}_{p.kind}_{p.command_nr}.png"
-            tableau.render_tableau(p, state, player_lookup or {}, out)
+            tableau.render_tableau(p, state, player_lookup or {}, out, sprites=player_sprites)
             n += 1
         log.info("rendered %d tableaux to %s", n, args.tableaux)
 
@@ -125,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             if p.command_nr is None:
                 continue
             out = args.gifs / f"{i:02d}_{p.kind}_{p.command_nr}.gif"
-            animate.render_play_gif(replay, p, player_lookup or {}, out)
+            animate.render_play_gif(replay, p, player_lookup or {}, out, sprites=player_sprites)
             n += 1
         log.info("rendered %d gifs to %s", n, args.gifs)
 
