@@ -48,19 +48,30 @@ def _audio_duration_seconds(path: Path) -> float:
 
 
 def _encode_play_clip(gif: Path, audio: Path, out: Path) -> bool:
-    """Encode one play: loop the GIF for the duration of the audio."""
-    dur = _audio_duration_seconds(audio)
-    if dur <= 0:
+    """Encode one play: stretch the GIF's final frame to fill the audio length.
+
+    Movement → impact → linger-on-impact-while-voice-trails-off. The
+    `tpad=stop_mode=clone:stop_duration=N` extends the last frame for
+    N seconds rather than looping the whole gif back to start, which
+    would jarringly restart the play.
+    """
+    audio_dur = _audio_duration_seconds(audio)
+    gif_dur = _audio_duration_seconds(gif)  # ffprobe reads gif frame timing too
+    if audio_dur <= 0:
         log.warning("could not read audio duration for %s; skipping", audio.name)
         return False
+    pad_dur = max(0.0, audio_dur - gif_dur)
+    vf = (
+        f"tpad=stop_mode=clone:stop_duration={pad_dur:.3f},"
+        f"fps={FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2"
+    )
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        # Loop the gif indefinitely; we trim with -t to the audio length.
-        "-stream_loop", "-1", "-i", str(gif),
+        "-i", str(gif),
         "-i", str(audio),
         "-map", "0:v:0", "-map", "1:a:0",
-        "-t", f"{dur:.3f}",
-        "-vf", f"fps={FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2",
+        "-t", f"{audio_dur:.3f}",
+        "-vf", vf,
         "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
         "-pix_fmt", VIDEO_PIX_FMT,
         "-c:a", AUDIO_CODEC, "-b:a", AUDIO_BITRATE,

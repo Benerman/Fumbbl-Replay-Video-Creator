@@ -64,14 +64,21 @@ def mix_play_audio(
     out_path: Path,
     *,
     tts_banter_path: Path | None = None,
+    impact_offset_ms: int = 0,
+    target_duration_ms: int | None = None,
 ) -> Path | None:
     """Mix one play's audio into a single mp3.
 
-    Layers (start times relative to t=0):
-      - SFX 1 (on-field thud) at 0ms
-      - SFX 2 (crowd bed) at ~500ms
-      - TTS primary (play-by-play) at ~1800ms — well after SFX has landed
-      - TTS banter (colour commentator) at primary_end + ~350ms gap
+    `impact_offset_ms` shifts all on-field SFX and the voice lines so
+    they fire at the moment the visual climax lands in the play GIF
+    (e.g. when the injury dice settle), not at t=0. The crowd bed
+    starts 500 ms after impact; the play-by-play voice 1.3 s after;
+    the banter follows the play-by-play. The pre-impact stretch is
+    silence so the audience sees the movement first.
+
+    `target_duration_ms` pads the mixed output with trailing silence
+    so audio length >= the gif length — that lets the compose step
+    play the gif to completion without having to loop it.
 
     Returns the output Path, or None if ffmpeg is missing or all
     inputs are empty.
@@ -81,15 +88,18 @@ def mix_play_audio(
         return None
     inputs: list[tuple[Path, float, int]] = []   # (path, volume, delay_ms)
     sfx_list = [p for p in sfx_paths if p and p.exists()]
+    sfx_thud_delay = impact_offset_ms + SFX_THUD_DELAY_MS
+    sfx_crowd_delay = impact_offset_ms + SFX_CROWD_DELAY_MS
+    tts_primary_delay = impact_offset_ms + TTS_PRIMARY_DELAY_MS
     if sfx_list:
-        inputs.append((sfx_list[0], SFX_THUD_VOLUME, SFX_THUD_DELAY_MS))
+        inputs.append((sfx_list[0], SFX_THUD_VOLUME, sfx_thud_delay))
     if len(sfx_list) > 1:
-        inputs.append((sfx_list[1], SFX_CROWD_VOLUME, SFX_CROWD_DELAY_MS))
+        inputs.append((sfx_list[1], SFX_CROWD_VOLUME, sfx_crowd_delay))
     if tts_path and tts_path.exists():
-        inputs.append((tts_path, TTS_VOLUME, TTS_PRIMARY_DELAY_MS))
+        inputs.append((tts_path, TTS_VOLUME, tts_primary_delay))
     if tts_banter_path and tts_banter_path.exists():
         primary_dur = _audio_duration_ms(tts_path) if tts_path else 0
-        banter_delay = TTS_PRIMARY_DELAY_MS + primary_dur + TTS_BANTER_GAP_MS
+        banter_delay = tts_primary_delay + primary_dur + TTS_BANTER_GAP_MS
         inputs.append((tts_banter_path, TTS_VOLUME, banter_delay))
     if not inputs:
         log.warning("no inputs to mix for %s", out_path.name)
@@ -108,7 +118,15 @@ def mix_play_audio(
     filt_parts.append(
         f"{mix_inputs}amix=inputs={len(inputs)}:duration=longest:normalize=0[mix]"
     )
-    if TAIL_PAD_MS:
+    # Tail pad: at minimum a small breath; bump to `target_duration_ms`
+    # if the caller wants the audio to match the gif length so the
+    # video can play the gif to completion without looping.
+    if target_duration_ms and target_duration_ms > 0:
+        filt_parts.append(
+            f"[mix]apad=whole_dur={target_duration_ms / 1000.0}[out]"
+        )
+        final_label = "[out]"
+    elif TAIL_PAD_MS:
         filt_parts.append(f"[mix]apad=pad_dur={TAIL_PAD_MS / 1000.0}[out]")
         final_label = "[out]"
     else:
@@ -133,11 +151,20 @@ def mix_match_audio(
     output_dir: Path,
     *,
     banter_by_play: dict[int, Path] | None = None,
+    impact_offsets_ms: dict[int, int] | None = None,
+    target_durations_ms: dict[int, int] | None = None,
 ) -> dict[int, Path]:
-    """Mix the entire match's per-play audio. Returns {play_index -> mp3 Path}."""
+    """Mix the entire match's per-play audio. Returns {play_index -> mp3 Path}.
+
+    `impact_offsets_ms` and `target_durations_ms` (both keyed by play
+    index) come from the gif renderer when video sync is wired up.
+    Missing entries fall back to t=0 / no pad.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     out: dict[int, Path] = {}
     banter_by_play = banter_by_play or {}
+    impact_offsets_ms = impact_offsets_ms or {}
+    target_durations_ms = target_durations_ms or {}
     all_indices = sorted(set(tts_by_play) | set(sfx_by_play))
     for idx in all_indices:
         kind = kinds_by_play.get(idx, "play")
@@ -147,6 +174,8 @@ def mix_match_audio(
             sfx_paths=sfx_by_play.get(idx, []),
             out_path=path,
             tts_banter_path=banter_by_play.get(idx),
+            impact_offset_ms=impact_offsets_ms.get(idx, 0),
+            target_duration_ms=target_durations_ms.get(idx),
         )
         if result:
             out[idx] = result

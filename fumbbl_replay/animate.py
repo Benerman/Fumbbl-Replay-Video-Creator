@@ -12,6 +12,7 @@ fire up the FFB Java client.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -21,6 +22,17 @@ from .analyzer import PivotalPlay
 from .events import PlayerInfo
 from .field_state import FieldState, reconstruct_at
 from .tableau import render_tableau
+
+
+@dataclass
+class GifResult:
+    """Output of render_play_gif. impact_ms is how many milliseconds into
+    the clip the key visual moment (last dice reveal, or second-to-last
+    frame for dice-less plays) lands — the mixer uses this to align the
+    SFX bed with what the viewer is actually seeing."""
+    path: Path
+    impact_ms: int
+    total_ms: int
 
 # Field-affecting modelChangeIds. A frame is worth rendering only when
 # one of these fired in the command - dice, dialog, and turn-counter
@@ -54,12 +66,16 @@ def render_play_gif(
     frame_ms: int = 200,
     final_pause_ms: int = 1500,
     max_frames: int = 50,
-) -> Path:
+) -> GifResult:
     """Render an animated GIF of the play's run-up.
 
     `lookback_cmds` is how far back from the play's command_nr we
     start. Defaults to 60 - typically covers the whole scoring drive
     or the action sequence leading to a casualty.
+
+    Returns a GifResult carrying the gif path, the impact_ms timestamp
+    (when the climactic moment lands in the clip — used by the audio
+    mixer to align SFX with the visual), and total_ms.
     """
     if play.command_nr is None:
         raise ValueError("play has no command_nr; cannot animate")
@@ -154,6 +170,9 @@ def render_play_gif(
         return f
 
     frame_idx = 0
+    # Track the LAST appended dice-reveal frame so the audio mix
+    # can hit SFX at the exact moment the dice land in the clip.
+    last_dice_frame_idx: int | None = None
     for i, cn in enumerate(interesting_cmds):
         is_last = i == len(interesting_cmds) - 1
         state = reconstruct_at(replay, cn, stop_at=last_stop if is_last else None)
@@ -176,6 +195,7 @@ def render_play_gif(
             for _ in range(REVEAL_DWELL_FRAMES + 1):
                 frames.append(reveal_frame)
                 durations_per_frame.append(frame_ms)
+            last_dice_frame_idx = len(frames) - 1
 
         # Normal frame for the field state (no new dice).
         visible = [g for _, groups in active_dice for g in groups]
@@ -187,6 +207,18 @@ def render_play_gif(
     # Make the final frame linger so the viewer can read the resolution.
     durations_per_frame[-1] = max(frame_ms, final_pause_ms)
 
+    # Impact = first frame of the dice-reveal hold for the LAST dice
+    # group; for dice-less plays (most pure-movement TDs), use the
+    # frame just before the lingering resolution frame. We aim 1 frame
+    # back from the end of the dice hold so the SFX hits as the dice
+    # settle, not after.
+    if last_dice_frame_idx is not None:
+        impact_frame_idx = max(0, last_dice_frame_idx - REVEAL_DWELL_FRAMES)
+    else:
+        impact_frame_idx = max(0, len(frames) - 2)
+    impact_ms = sum(durations_per_frame[:impact_frame_idx + 1])
+    total_ms = sum(durations_per_frame)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     frames[0].save(
         out_path,
@@ -197,7 +229,7 @@ def render_play_gif(
         optimize=False,
         disposal=2,
     )
-    return out_path
+    return GifResult(path=out_path, impact_ms=impact_ms, total_ms=total_ms)
 
 
 def render_field_state_frames(

@@ -222,17 +222,10 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as e:
             log.warning("SFX resolution failed: %s", e)
 
-    mix_paths: dict[int, Path] = {}
-    if args.mix:
-        from . import mix as mix_mod
-        try:
-            mix_paths = mix_mod.mix_match_audio(
-                tts_paths, sfx_paths, kinds, args.mix,
-                banter_by_play=banter_paths,
-            )
-            log.info("mixed %d per-play clips into %s", len(mix_paths), args.mix)
-        except Exception as e:
-            log.warning("audio mix failed: %s", e)
+    # Mix is deferred until AFTER gifs render so it can use each
+    # play's impact_ms (when the visual climax lands) and total_ms.
+    # When --gifs isn't requested, mix still runs with default
+    # offsets (everything from t=0, as before).
 
     if args.json:
         out = dataclasses.asdict(analysis)
@@ -322,6 +315,8 @@ def main(argv: list[str] | None = None) -> int:
         log.info("rendered %d tableaux to %s", n, args.tableaux)
 
     gif_paths: dict[int, Path] = {}
+    impact_offsets_ms: dict[int, int] = {}
+    target_durations_ms: dict[int, int] = {}
     if args.gifs:
         from . import animate
         n = 0
@@ -329,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
             if p.command_nr is None:
                 continue
             out = args.gifs / f"{i:02d}_{p.kind}_{p.command_nr}.gif"
-            animate.render_play_gif(
+            result = animate.render_play_gif(
                 replay, p, player_lookup or {}, out,
                 sprites=player_sprites,
                 orientation=args.orientation,
@@ -338,9 +333,25 @@ def main(argv: list[str] | None = None) -> int:
                 pitch_background=pitch_bg,
                 weather=weather,
             )
-            gif_paths[i] = out
+            gif_paths[i] = result.path
+            impact_offsets_ms[i] = result.impact_ms
+            target_durations_ms[i] = result.total_ms
             n += 1
         log.info("rendered %d gifs to %s", n, args.gifs)
+
+    mix_paths: dict[int, Path] = {}
+    if args.mix:
+        from . import mix as mix_mod
+        try:
+            mix_paths = mix_mod.mix_match_audio(
+                tts_paths, sfx_paths, kinds, args.mix,
+                banter_by_play=banter_paths,
+                impact_offsets_ms=impact_offsets_ms,
+                target_durations_ms=target_durations_ms,
+            )
+            log.info("mixed %d per-play clips into %s", len(mix_paths), args.mix)
+        except Exception as e:
+            log.warning("audio mix failed: %s", e)
 
     if args.video:
         from . import compose
