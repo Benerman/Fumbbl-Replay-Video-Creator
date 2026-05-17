@@ -172,25 +172,36 @@ replies with a one-time Google auth URL, the admin authorizes in their
 browser, and the bot's callback handler encrypts + stores the refresh
 token under that guild.
 
-### Run it (docker compose, recommended)
+### First-time bring-up
+
+Full step-by-step from a fresh clone to your first `/generate-highlight`
+is in [**`docs/bring-up-checklist.md`**](docs/bring-up-checklist.md).
+For just the Google side (creating an OAuth client and downloading
+`client_secret.json`), see
+[**`docs/google-oauth-setup.md`**](docs/google-oauth-setup.md).
+
+The condensed version:
 
 ```bash
+# 1. Get the Google OAuth client (see docs/google-oauth-setup.md)
+mkdir -p data && mv ~/Downloads/client_secret_*.json data/client_secret.json
+
+# 2. Configure
 cp deploy/.env.example deploy/.env
-# Generate a master key (32-byte base64 Fernet):
 python -c 'from services.common.crypto import generate_master_key; print(generate_master_key())'
-# Paste into FERNET_MASTER_KEY in deploy/.env, fill in DISCORD_BOT_TOKEN, etc.
+# Paste into FERNET_MASTER_KEY in deploy/.env, plus DISCORD_BOT_TOKEN
+# and DISCORD_APPLICATION_ID from your Discord developer-portal app.
 
-# Drop your Google OAuth client secrets file (Installed/Desktop type) at:
-mkdir -p data && cp path/to/client_secret.json data/
-
+# 3. Launch
 cd deploy && docker compose up --build -d
+docker compose logs -f bot   # confirm "logged in as ..."
 
-# One-time: mint a refresh token for the operator's default YouTube channel
+# 4. Mint the default YouTube refresh token (one-time)
 docker compose exec worker python -m services.worker.youtube_upload --bootstrap-default
-```
 
-Then invite the bot to your Discord server with the `applications.commands` +
-`bot` scopes and try `/generate-highlight 4700552` in any channel.
+# 5. Invite the bot to your Discord server with applications.commands + bot
+#    scopes, then try /generate-highlight 4700552 in any channel.
+```
 
 ### Local dev (without docker)
 
