@@ -110,7 +110,19 @@ def _encode_play_clip(video_source: Path, audio: Path, out: Path,
 
 
 def _concat_clips(clips: Sequence[Path], out_path: Path) -> bool:
-    """Concat the per-play MP4s into one. Stream-copy where possible."""
+    """Concat the per-play MP4s into one.
+
+    Re-encodes the joined stream rather than `-c copy` because the
+    demuxer's stream-copy path leaves a slightly drifted average
+    frame rate (the clip-boundary timestamps don't quite land on
+    30-fps ticks). Some players — QuickTime / Safari / iOS / older
+    media frameworks — refuse to play such files. Forcing
+    constant-frame-rate output through `fps={FPS}` and re-encoding
+    h264 + aac produces a clean, broadly-playable result.
+
+    Also drops the bitstream to High@4.0 to match what most consumer
+    hardware decoders support without complaint.
+    """
     if not clips:
         return False
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
@@ -121,7 +133,11 @@ def _concat_clips(clips: Sequence[Path], out_path: Path) -> bool:
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-f", "concat", "-safe", "0", "-i", listing,
-        "-c", "copy",
+        "-vf", f"fps={FPS}",
+        "-fps_mode", "cfr",
+        "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
+        "-pix_fmt", VIDEO_PIX_FMT, "-profile:v", "high", "-level:v", "4.0",
+        "-c:a", AUDIO_CODEC, "-b:a", AUDIO_BITRATE,
         "-movflags", "+faststart",
         str(out_path),
     ]
@@ -129,25 +145,11 @@ def _concat_clips(clips: Sequence[Path], out_path: Path) -> bool:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
         return True
     except subprocess.CalledProcessError as e:
-        # Codec-mismatch fallback: re-encode the concat.
-        log.warning("concat -c copy failed (%s); falling back to re-encode", e.stderr.splitlines()[-1] if e.stderr else e)
-        cmd = [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", listing,
-            "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
-            "-pix_fmt", VIDEO_PIX_FMT,
-            "-c:a", AUDIO_CODEC, "-b:a", AUDIO_BITRATE,
-            "-movflags", "+faststart",
-            str(out_path),
-        ]
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
-            return True
-        except subprocess.CalledProcessError as e2:
-            log.warning("concat re-encode also failed: %s", e2.stderr or e2)
-            return False
+        log.warning("concat re-encode failed: %s", e.stderr or e)
+        return False
     finally:
         Path(listing).unlink(missing_ok=True)
+
 
 
 def compose_highlight_reel(
