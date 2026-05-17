@@ -69,13 +69,25 @@ portal + Google verification).
       ```bash
       cp deploy/.env.example deploy/.env
       ```
-- [ ] **Generate a Fernet master key:**
+- [ ] **Generate a Fernet master key.** Pick whichever of these
+      works in your shell — they all produce the same kind of
+      32-byte urlsafe-base64 token Fernet expects:
+
       ```bash
-      python -c 'from services.common.crypto import generate_master_key; print(generate_master_key())'
+      # Option A — pure stdlib Python (no project deps needed):
+      python3 -c 'import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
+
+      # Option B — openssl (no Python needed):
+      openssl rand -base64 32 | tr '+/' '-_'
+
+      # Option C — once the docker image is built, generate inside it:
+      cd deploy && docker compose run --rm bot \
+          python -c 'from services.common.crypto import generate_master_key; print(generate_master_key())'
       ```
-      Paste into `FERNET_MASTER_KEY` in `deploy/.env`. **Once you
-      save the file, do not change this value** — rotating it
-      invalidates every stored YouTube refresh token.
+
+      Paste the output into `FERNET_MASTER_KEY` in `deploy/.env`.
+      **Once you save the file, do not change this value** —
+      rotating it invalidates every stored YouTube refresh token.
 - [ ] Paste the **bot token** from step 2 into `DISCORD_BOT_TOKEN`.
 - [ ] Find your **Application ID** at
       <https://discord.com/developers/applications> → your app →

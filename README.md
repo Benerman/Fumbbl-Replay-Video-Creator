@@ -188,7 +188,8 @@ mkdir -p data && mv ~/Downloads/client_secret_*.json data/client_secret.json
 
 # 2. Configure
 cp deploy/.env.example deploy/.env
-python -c 'from services.common.crypto import generate_master_key; print(generate_master_key())'
+# Generate a Fernet master key (stdlib, no project deps required):
+python3 -c 'import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
 # Paste into FERNET_MASTER_KEY in deploy/.env, plus DISCORD_BOT_TOKEN
 # and DISCORD_APPLICATION_ID from your Discord developer-portal app.
 
