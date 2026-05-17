@@ -295,12 +295,11 @@ def _draw_players(
             ring_r = r + (5 if sprite_pair else 4)
             draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], fill=HIGHLIGHT)
 
-        # Team-colour ring under the sprite. A thin outline (no fill)
-        # avoids the muddy red+green composite the faint-disc approach
-        # produced - the sprite sits cleanly inside a clear colour band.
-        ring_r = r + 1
-        draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r],
-                     outline=color, width=2)
+        # The FFB sprite columns are already team-tinted (home cols 0/1,
+        # away cols 2/3) so we trust the sprite to convey team identity.
+        # No extra coloured ring under it — that read as a contradiction
+        # against the sprite's own colour scheme. Players without a
+        # usable sprite still get a colour-disc fallback below.
 
         if sprite_pair:
             # Prefer the ball-pose variant when this player stands on
