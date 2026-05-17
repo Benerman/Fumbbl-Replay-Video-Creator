@@ -173,10 +173,12 @@ def render_tableau(
     _draw_coord_labels(img, lay, _font(22))
     # Layer 4: header bar above the pitch.
     draw.text((lay.ox, 28), _header_text(play, weather=weather), fill=TEXT, font=font)
-    # Layer 5: ball.
-    _draw_ball(img, draw, lay, state)
-    # Layer 6: players + their state markers + the highlight ring.
+    # Layer 5: players + their state markers + the highlight ring.
     _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
+    # Layer 6: ball — drawn AFTER players so the held-ball icon sits
+    # over the carrier's sprite (was previously drawn under, which
+    # is why you couldn't see it through the player).
+    _draw_ball(img, draw, lay, state)
     # Layer 6b: BLITZ badge on the OPPONENT that was marked against
     # (the block defender during the blitz). We only show the badge
     # when we actually know who that was — for plays where the action
@@ -198,15 +200,33 @@ def render_tableau(
     return out_path
 
 
-_HOLDBALL_ICON_CACHE: Image.Image | None = None
+def _draw_football(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int) -> None:
+    """Stamp a football: brown oval body, cream laces, dark outline.
+    cx/cy is the centre, r is the radius along the long axis."""
+    body = (170, 95, 40)
+    seam = (255, 245, 215)
+    outline = (28, 14, 4)
+    draw.ellipse([cx - r, cy - int(r * 0.7),
+                   cx + r, cy + int(r * 0.7)],
+                  fill=body, outline=outline, width=max(2, r // 5))
+    # Centre seam + small cross-laces
+    lace_w = max(2, r // 6)
+    draw.line([cx - int(r * 0.55), cy, cx + int(r * 0.55), cy],
+              fill=seam, width=lace_w)
+    for dx in (-int(r * 0.32), 0, int(r * 0.32)):
+        draw.line([cx + dx, cy - int(r * 0.32),
+                    cx + dx, cy + int(r * 0.32)],
+                   fill=seam, width=max(1, lace_w - 1))
+
 
 def _draw_ball(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
                state: FieldState) -> None:
     """Render the ball. If a player stands on the ball's tile it's
-    being held — show the FFB holdball badge on top of their sprite.
-    Otherwise it's loose (bouncing / passed / kicked) — draw a free
-    ball icon at the coordinate so the viewer can track it across
-    bounces and pass arcs."""
+    being held — overlay a clear football icon centred high on their
+    sprite (above the head) so the carrier reads at a glance.
+    Otherwise the ball is loose (bouncing / passed / kicked) — draw
+    a free football at the coordinate so the viewer can track it
+    across bounces and pass arcs."""
     if not state.ball:
         return
     bx, by = state.ball
@@ -219,34 +239,19 @@ def _draw_ball(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
             holder_pid = pid
             break
     if holder_pid:
-        global _HOLDBALL_ICON_CACHE
-        if _HOLDBALL_ICON_CACHE is None:
-            from . import sprites
-            _HOLDBALL_ICON_CACHE = sprites.fetch_ffb_decoration("holdball")
-        if _HOLDBALL_ICON_CACHE is not None:
-            # Place top-right of the player tile so it doesn't hide the sprite.
-            icon = _HOLDBALL_ICON_CACHE
-            desired = max(16, TILE // 2 + 4)
-            if icon.size != (desired, desired):
-                icon = icon.resize((desired, desired), resample=Image.NEAREST)
-            off_x = TILE // 2 - desired + 6
-            off_y = -TILE // 2 - 2
-            img.alpha_composite(icon, (cx + off_x, cy + off_y))
-            return
-        # Fallback: a small bright ball badge on the player's tile.
-        r = TILE // 4
-        off_x, off_y = TILE // 3, -TILE // 3
-        draw.ellipse([cx + off_x - r, cy + off_y - r,
-                       cx + off_x + r, cy + off_y + r],
-                      fill=(140, 90, 40),
-                      outline=(255, 240, 180), width=2)
+        # Sit the ball just above the player's head so it's not
+        # competing with the sprite for visual attention. Tile is
+        # TILE px; player sprite fills most of it. Anchoring just
+        # above the top edge of the tile keeps the ball legible
+        # without obscuring face/number.
+        r = max(9, TILE // 4)
+        bx_cx = cx
+        bx_cy = cy - TILE // 2 + int(r * 0.6)
+        _draw_football(draw, bx_cx, bx_cy, r)
         return
-    # Loose ball: bouncing or in flight. Bigger + ringed so the viewer
-    # can pick it up against the pitch.
-    r = TILE // 3
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r],
-                  fill=(245, 230, 180),
-                  outline=(120, 60, 20), width=max(2, TILE // 20))
+    # Loose ball: bouncing or in flight. Bigger so the viewer can pick
+    # it up against the pitch and track it across bounces.
+    _draw_football(draw, cx, cy, max(10, TILE // 3))
 
 
 def _draw_players(
