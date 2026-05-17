@@ -292,12 +292,12 @@ def render_play_gif(
 
         prev_cn = cn
 
-    # Speed-up pass: when 5+ consecutive frames are pure movement,
-    # halve their durations so long walks-to-the-endzone don't drag.
-    # Runs that cross into a dice section snap back to normal speed —
-    # we want the action moment to land at the regular cadence.
+    # Speed-up pass: when 5+ consecutive frames are pure movement, cap
+    # their durations so long walks-to-the-endzone don't drag. Runs
+    # that cross into a dice section snap back to normal speed — the
+    # action moment lands at the regular cadence.
     MOVEMENT_SPEEDUP_THRESHOLD = 5
-    MOVEMENT_SPEEDUP_FACTOR = 2     # 200ms -> 100ms
+    FAST_FRAME_MS = 140             # was 100 (full 2x speed-up); 140 is ~30% slower
     i = 0
     while i < len(movement_only):
         if movement_only[i]:
@@ -306,7 +306,7 @@ def render_play_gif(
                 i += 1
             if i - run_start >= MOVEMENT_SPEEDUP_THRESHOLD:
                 for k in range(run_start, i):
-                    durations_per_frame[k] = max(1, durations_per_frame[k] // MOVEMENT_SPEEDUP_FACTOR)
+                    durations_per_frame[k] = min(durations_per_frame[k], FAST_FRAME_MS)
         else:
             i += 1
 
