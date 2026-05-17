@@ -161,6 +161,10 @@ def render_play_gif(
     frames: list[Image.Image] = []
     durations_per_frame: list[int] = []
     frame_pngs: list[Path | None] = []      # parallel to frames[]: full-res PNG path or None
+    # True when this frame has no dice showing (pure movement). Post-loop
+    # we halve durations on runs of >= MOVEMENT_SPEEDUP_THRESHOLD pure
+    # movement frames so long walks-to-the-endzone don't drag.
+    movement_only: list[bool] = []
     active_dice: list[tuple[int, list]] = []
     prev_cn = -1
     if frames_dir is not None:
@@ -223,6 +227,7 @@ def render_play_gif(
                 frames.append(reveal_frame)
                 durations_per_frame.append(frame_ms)
                 frame_pngs.append(reveal_png)
+                movement_only.append(False)
             last_dice_frame_idx = len(frames) - 1
 
         # Normal frame for the field state (no new dice).
@@ -231,10 +236,34 @@ def render_play_gif(
         frames.append(frame_img)
         durations_per_frame.append(frame_ms)
         frame_pngs.append(frame_png)
+        # "Movement only" = no dice fired this cmd AND no dice still on
+        # screen from earlier. These frames are eligible for the
+        # speed-up pass below.
+        movement_only.append(not new_groups and not active_dice)
 
         prev_cn = cn
 
+    # Speed-up pass: when 5+ consecutive frames are pure movement,
+    # halve their durations so long walks-to-the-endzone don't drag.
+    # Runs that cross into a dice section snap back to normal speed —
+    # we want the action moment to land at the regular cadence.
+    MOVEMENT_SPEEDUP_THRESHOLD = 5
+    MOVEMENT_SPEEDUP_FACTOR = 2     # 200ms -> 100ms
+    i = 0
+    while i < len(movement_only):
+        if movement_only[i]:
+            run_start = i
+            while i < len(movement_only) and movement_only[i]:
+                i += 1
+            if i - run_start >= MOVEMENT_SPEEDUP_THRESHOLD:
+                for k in range(run_start, i):
+                    durations_per_frame[k] = max(1, durations_per_frame[k] // MOVEMENT_SPEEDUP_FACTOR)
+        else:
+            i += 1
+
     # Make the final frame linger so the viewer can read the resolution.
+    # Has to run AFTER the speed-up pass — otherwise we'd halve the
+    # resolution hold along with the movement.
     durations_per_frame[-1] = max(frame_ms, final_pause_ms)
 
     # Impact = first frame of the dice-reveal hold for the LAST dice
