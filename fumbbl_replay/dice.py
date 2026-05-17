@@ -189,8 +189,8 @@ def extract_for_command(
 
 # ---------- icon drawing ----------
 
-BLOCK_DIE_SIZE = 22
-D6_SIZE = 20
+BLOCK_DIE_SIZE = 44
+D6_SIZE = 40
 DIE_BG = (245, 245, 240)
 DIE_FG = (24, 24, 24)
 DIE_SUCCESS = (60, 150, 70)
@@ -244,7 +244,7 @@ def render_group_strip(group: DiceGroup, font: ImageFont.ImageFont | None = None
     caption underneath ("armor" / "injury") for 2d6 groups.
     """
     caption = group.caption
-    caption_h = 12 if caption else 0
+    caption_h = 24 if caption else 0
     if group.kind == "block":
         s = BLOCK_DIE_SIZE
         gap = 2

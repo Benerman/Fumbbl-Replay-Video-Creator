@@ -353,12 +353,14 @@ def _draw_blitz_badge(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
     if _TARGET_ICON_CACHE is None:
         from . import sprites
         _TARGET_ICON_CACHE = sprites.fetch_ffb_decoration("target")
-    # Scale the 15x15 source up to wrap the player tile cleanly.
-    desired = TILE + 12
+    # Scale the 15x15 source ~2x with bicubic so the edges stay clean
+    # instead of nearest-blocky, and keep it small enough that the
+    # player tile underneath is still readable.
+    desired = max(24, TILE // 2 + 4)
     icon = _TARGET_ICON_CACHE
     if icon is not None:
         if icon.size != (desired, desired):
-            icon = icon.resize((desired, desired), resample=Image.NEAREST)
+            icon = icon.resize((desired, desired), resample=Image.BICUBIC)
         img.alpha_composite(icon, (cx - desired // 2, cy - desired // 2))
         return
     # Fallback: drawn crosshair if the asset couldn't be fetched.

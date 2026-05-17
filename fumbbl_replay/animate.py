@@ -198,11 +198,11 @@ def render_play_gif(
             rolls_by_cmd[cn] = groups
 
     # Render frames. Whenever a new dice group is about to appear we
-    # reveal them one at a time and HOLD each new reveal for a few
-    # extra frames so the viewer has time to read the block, the
-    # armor, and the injury rolls separately. Field motion otherwise
-    # plays at the regular `frame_ms` cadence.
-    REVEAL_DWELL_FRAMES = 4   # extra frames per newly revealed dice group
+    # reveal them one at a time and HOLD each new reveal for a generous
+    # beat so the viewer can read the block / armor / injury rolls.
+    # Combined with the 2x movement speed-up, this gives the action
+    # moment good emphasis against the fast travel before and after.
+    REVEAL_DWELL_FRAMES = 8   # extra frames per newly revealed dice group
 
     frames: list[Image.Image] = []
     durations_per_frame: list[int] = []
