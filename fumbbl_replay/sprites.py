@@ -79,6 +79,37 @@ def fetch_icon_sheet(image_id: int) -> Image.Image:
     return _fetch_image(image_id, "icons")
 
 
+def fetch_ffb_decoration(name: str) -> Image.Image | None:
+    """Fetch an icon from the FFB Java client's `icons/` tree, cached on
+    disk. `name` is a path relative to
+    `ffb-resources/src/main/resources/icons/`, with or without the
+    leading subdir — bare names without a slash default to
+    `decorations/` (target.png, holdball.png, etc.); names like
+    `game/sball_60x60` go through verbatim.
+
+    Returns None if the asset can't be fetched.
+    """
+    rel = name if "/" in name else f"decorations/{name}"
+    cache_path = CACHE_DIR / "ffb_decorations" / f"{rel.replace('/', '__')}.png"
+    if not cache_path.exists():
+        url = ("https://raw.githubusercontent.com/christerk/ffb/master/"
+                f"ffb-resources/src/main/resources/icons/{rel}.png")
+        try:
+            log.info("GET %s", url)
+            r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+            r.raise_for_status()
+        except Exception as e:
+            log.warning("could not fetch FFB resource %s: %s", rel, e)
+            return None
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(r.content)
+    try:
+        return Image.open(cache_path).convert("RGBA")
+    except Exception as e:
+        log.warning("could not open FFB resource %s: %s", rel, e)
+        return None
+
+
 def fetch_team_logo(image_id: int | None) -> Image.Image | None:
     """Fetch a team logo image, cached on disk. Returns None for missing logos."""
     if not image_id:
@@ -102,11 +133,15 @@ def _fetch_image(image_id: int, subdir: str) -> Image.Image:
     return Image.open(cache_path).convert("RGBA")
 
 
-def extract_sprite(sheet: Image.Image, *, side: str, row: int, moving: bool = False) -> Image.Image:
+def extract_sprite(sheet: Image.Image, *, side: str, row: int,
+                    moving: bool = False) -> Image.Image:
     """Crop the cell for one player from a 4-column icon sheet.
 
     Column layout matches FFB's `PlayerIconFactory.getBasicIcon`:
-    home-still=0, home-moving=1, away-still=2, away-moving=3.
+    home-still=0, home-moving=1, away-still=2, away-moving=3. Rows
+    are diversity variants for the same position. FFB icon sheets
+    do NOT include with-ball variants — the ball is always rendered
+    as a separate decoration overlay (`decoration.ball`).
     """
     w, h = sheet.size
     cell_w = w // ICON_COLS

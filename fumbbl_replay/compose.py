@@ -1,0 +1,268 @@
+"""Final stitched video: per-play GIFs + per-play mixed-audio MP3s -> MP4.
+
+For each pivotal play we already have:
+  - vertical/gifs/{NN_kind_cmd}.gif    (silent, ~3-7s of looping action)
+  - mixed/{NN_kind}.mp3                (SFX + voice A + voice B layered)
+
+`compose_highlight_reel` encodes one MP4 per play (gif looped to fill the
+audio duration), then concatenates them in pivotal order into a single
+match-highlight MP4.
+
+The intermediate per-play MP4s use a fixed codec/profile/timebase so the
+final concat step is a stream copy — fast and avoids quality loss from
+re-encoding.
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Iterable, Sequence
+
+log = logging.getLogger(__name__)
+
+# Encoding profile for the intermediates. The pad ensures even dimensions
+# (libx264 requires width/height divisible by 2) regardless of input size.
+# CRF 18 is visually near-lossless; preset 'slow' gives notably smaller
+# files than 'medium' for an extra second of encode per play, which is
+# fine for our 9-clip match-highlight workloads.
+VIDEO_CODEC = "libx264"
+VIDEO_PRESET = "slow"
+VIDEO_CRF = "18"
+VIDEO_PIX_FMT = "yuv420p"
+AUDIO_CODEC = "aac"
+AUDIO_BITRATE = "256k"
+FPS = 30
+
+
+def _audio_duration_seconds(path: Path) -> float:
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, check=True,
+        )
+        return float(proc.stdout.strip())
+    except Exception:
+        return 0.0
+
+
+def _encode_play_clip(video_source: Path, audio: Path, out: Path,
+                       *, frames_dir: Path | None = None) -> bool:
+    """Encode one play. Stretches the source's final frame to fill the
+    audio length: movement → impact → linger-on-impact-while-voice-trails.
+
+    When `frames_dir` is provided (contains `concat.txt`), the high-res
+    PNG sequence is used as the video source — no GIF palette
+    quantisation, no downscale, full colour depth. Otherwise falls back
+    to the GIF at `video_source`.
+    """
+    audio_dur = _audio_duration_seconds(audio)
+    if audio_dur <= 0:
+        log.warning("could not read audio duration for %s; skipping", audio.name)
+        return False
+
+    using_frames = frames_dir is not None and (frames_dir / "concat.txt").exists()
+    if using_frames:
+        concat_file = frames_dir / "concat.txt"
+        # Sum durations from concat.txt to get the source video length.
+        src_dur = 0.0
+        for line in concat_file.read_text().splitlines():
+            if line.startswith("duration "):
+                try:
+                    src_dur += float(line.split()[1])
+                except (ValueError, IndexError):
+                    pass
+        src_input = ["-f", "concat", "-safe", "0", "-i", str(concat_file)]
+    else:
+        src_dur = _audio_duration_seconds(video_source)
+        src_input = ["-i", str(video_source)]
+
+    pad_dur = max(0.0, audio_dur - src_dur)
+    # tpad=clone holds the last frame; fps re-times to constant rate; pad
+    # ensures even dimensions for libx264.
+    vf = (
+        f"tpad=stop_mode=clone:stop_duration={pad_dur:.3f},"
+        f"fps={FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        *src_input,
+        "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-t", f"{audio_dur:.3f}",
+        "-vf", vf,
+        "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
+        "-pix_fmt", VIDEO_PIX_FMT,
+        "-profile:v", "main", "-level:v", "4.0", "-bf", "0",
+        "-c:a", AUDIO_CODEC, "-b:a", "192k", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart",
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        log.warning("ffmpeg encode failed for %s: %s", video_source.name, e.stderr or e)
+        return False
+
+
+def _concat_clips(clips: Sequence[Path], out_path: Path) -> bool:
+    """Concat the per-play MP4s into one final highlight reel.
+
+    Uses the ffmpeg concat FILTER (not the demuxer) so all clips are
+    re-decoded into a single unified filter pipeline and emitted as
+    a single contiguous CFR stream. The demuxer's stream-copy path
+    left clip-boundary timestamps slightly drifted from 30-fps ticks,
+    which some players reject silently.
+
+    Encode settings are tuned for maximum compatibility:
+      profile:v main   - widely supported by hardware decoders
+      level:v 4.0      - up to 1080p30 / our 960x1804 (1.73 Mpix)
+      bf 0             - no b-frames; some legacy players struggle
+      pix_fmt yuv420p  - standard 4:2:0
+      aac LC 192k      - LC profile, standard sample rate
+      faststart        - moov at front for streaming readiness
+      avoid_negative_ts make_zero - clean PTS rebase
+
+    Cost is one decode + one encode (~25 s for a 2-minute reel).
+    """
+    if not clips:
+        return False
+    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    for c in clips:
+        cmd += ["-i", str(c)]
+    # Build the filter expression: [0:v:0][0:a:0][1:v:0][1:a:0]...
+    # then concat n=N:v=1:a=1.
+    parts: list[str] = []
+    for i in range(len(clips)):
+        parts.append(f"[{i}:v:0][{i}:a:0]")
+    concat_expr = "".join(parts) + f"concat=n={len(clips)}:v=1:a=1[v][a]"
+    cmd += [
+        "-filter_complex", concat_expr,
+        "-map", "[v]", "-map", "[a]",
+        "-r", str(FPS),
+        "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
+        "-pix_fmt", VIDEO_PIX_FMT,
+        "-profile:v", "main", "-level:v", "4.0",
+        "-bf", "0",
+        "-c:a", AUDIO_CODEC, "-b:a", "192k", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart",
+        "-avoid_negative_ts", "make_zero",
+        str(out_path),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        log.warning("concat-filter re-encode failed: %s", e.stderr or e)
+        return False
+
+
+
+def encode_still_clip(image_path: Path, audio: Path, out: Path,
+                       *, min_duration_ms: int = 0,
+                       lead_silence_ms: int = 400,
+                       tail_silence_ms: int = 1000) -> bool:
+    """Encode a still PNG + audio into an mp4. Used for intro / outro
+    title cards.
+
+    Pads the audio with `lead_silence_ms` of silence at the start
+    (lets the viewer register the slide before narration begins) and
+    `tail_silence_ms` at the end (so the voice doesn't bleed into
+    the next concat boundary). The clip's video length matches the
+    final audio length, then is clamped to `min_duration_ms` so
+    short narration still gets a readable on-screen beat."""
+    audio_dur = _audio_duration_seconds(audio)
+    if audio_dur <= 0:
+        log.warning("no audio for still clip %s", image_path.name)
+        return False
+    padded_audio_dur = audio_dur + (lead_silence_ms + tail_silence_ms) / 1000.0
+    target_dur = max(padded_audio_dur, min_duration_ms / 1000.0)
+    vf = (
+        f"loop=loop=-1:size=1,trim=duration={target_dur:.3f},"
+        f"fps={FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p"
+    )
+    af = (
+        f"adelay={lead_silence_ms}:all=1,"
+        f"apad=pad_dur={tail_silence_ms / 1000.0}"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-loop", "1", "-i", str(image_path),
+        "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-t", f"{target_dur:.3f}",
+        "-vf", vf,
+        "-af", af,
+        "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
+        "-pix_fmt", VIDEO_PIX_FMT,
+        "-profile:v", "main", "-level:v", "4.0", "-bf", "0",
+        "-c:a", AUDIO_CODEC, "-b:a", "192k", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart",
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        log.warning("still-clip encode failed for %s: %s", image_path.name, e.stderr or e)
+        return False
+
+
+def compose_highlight_reel(
+    gifs_by_play: dict[int, Path],
+    audio_by_play: dict[int, Path],
+    kinds_by_play: dict[int, str],
+    out_path: Path,
+    *,
+    work_dir: Path | None = None,
+    frames_dirs_by_play: dict[int, Path] | None = None,
+    intro_clip: Path | None = None,
+    outro_clip: Path | None = None,
+) -> Path | None:
+    """Stitch per-play sources + mixed MP3s into one MP4 highlight reel.
+
+    Plays are concatenated in ascending play-index order. When
+    `frames_dirs_by_play[idx]` is provided, that PNG sequence (with
+    concat.txt) is used as the video source — full-resolution,
+    full-colour. Otherwise falls back to the matching GIF.
+
+    Returns the output path, or None if ffmpeg is missing or no
+    clips could be produced.
+    """
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        log.warning("ffmpeg/ffprobe not on PATH; cannot compose video")
+        return None
+    if work_dir is None:
+        # Stem-scoped so a vertical + horizontal pair of runs into the
+        # same output folder don't trample each other's intermediates.
+        work_dir = out_path.parent / f"_clips_{out_path.stem}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    frames_dirs_by_play = frames_dirs_by_play or {}
+
+    clips: list[Path] = []
+    if intro_clip and intro_clip.exists():
+        clips.append(intro_clip)
+    for idx in sorted(set(gifs_by_play) & set(audio_by_play)):
+        gif = gifs_by_play[idx]
+        audio = audio_by_play[idx]
+        kind = kinds_by_play.get(idx, "play")
+        clip = work_dir / f"{idx:02d}_{kind}.mp4"
+        if _encode_play_clip(gif, audio, clip,
+                             frames_dir=frames_dirs_by_play.get(idx)):
+            clips.append(clip)
+    if outro_clip and outro_clip.exists():
+        clips.append(outro_clip)
+    if not clips:
+        log.warning("no per-play clips produced; nothing to concat")
+        return None
+
+    if _concat_clips(clips, out_path):
+        log.info("composed %d clip(s) into %s", len(clips), out_path)
+        return out_path
+    return None

@@ -23,8 +23,11 @@ from .events import PlayerInfo
 from .field_state import FieldState, PITCH_WIDTH, PITCH_HEIGHT
 
 
-# Tile size in pixels per pitch square.
-TILE = 28
+# Tile size in pixels per pitch square. Bumping this is the single
+# biggest lever on output sharpness — sprites are 35-pixel native cells,
+# so TILE=28 was shrinking them; TILE=56 gives them a clean 1.5x upscale
+# with NEAREST and the encoded video has more pixels for h264 to keep.
+TILE = 56
 
 # Player-state base values (low 4 bits of the bitmask FFB stores).
 _STATE_STANDING = 1
@@ -49,17 +52,22 @@ _PRONE_STATES = {_STATE_PRONE, _STATE_BLOCKED, _STATE_FALLING, _STATE_HIT_GROUND
 _MARKER_COLOR = (235, 40, 35)
 _MARKER_WIDTH = 3
 # Margins around the pitch. MARGIN_X needs to fit two-digit coord labels
-# (numbers 1-12 down each side / along each edge).
-MARGIN_X = 30
-MARGIN_TOP = 50
-CAPTION_H = 70
+# (numbers 1-12 down each side / along each edge). Scales with TILE.
+MARGIN_X = 60
+MARGIN_TOP = 100
+CAPTION_H = 248  # caption + stats line(s) + dugout-status strip
 # Field colours.
 PITCH_GREEN = (40, 90, 50)
 PITCH_LINE = (200, 220, 200)
 ENDZONE_TINT = (60, 110, 60)
 WIDE_TINT = (50, 100, 60)
-HOME_COLOR = (60, 110, 200)
-AWAY_COLOR = (200, 70, 60)
+# FFB convention: home sprites use the red-tinted columns 0/1 of the
+# icon sheet, away sprites the blue-tinted columns 2/3. Match the
+# label/UI colours to that so the team name in the endzone and the
+# dugout strip reads consistently with the sprite the user actually
+# sees on the pitch.
+HOME_COLOR = (200, 70, 60)    # red — matches FFB home sprite tint
+AWAY_COLOR = (60, 110, 200)   # blue — matches FFB away sprite tint
 HIGHLIGHT = (255, 215, 0)
 BALL_COLOR = (240, 240, 240)
 TEXT = (240, 240, 230)
@@ -100,7 +108,7 @@ class Layout:
                 self.oy + bb_y * TILE + TILE // 2)
 
 
-_COORD_BAND = 16  # px reserved above/below the pitch for row labels (horizontal layout)
+_COORD_BAND = 32  # px reserved above/below the pitch for row labels (horizontal layout)
 
 
 def _layout(orientation: str) -> Layout:
@@ -134,6 +142,8 @@ def render_tableau(
     away_logo: Image.Image | None = None,
     dice: list | None = None,
     pitch_background: Image.Image | None = None,
+    weather: str | None = None,
+    blitz_active: bool = True,        # show the crosshair on the blitz target?
 ) -> Path:
     """Render one pivotal-play tableau.
 
@@ -148,10 +158,10 @@ def render_tableau(
 
     img = Image.new("RGBA", (lay.img_w, lay.img_h), (24, 30, 24, 255))
     draw = ImageDraw.Draw(img)
-    font = _font(13)
-    small = _font(11)
-    tiny = _font(9)
-    endzone_font = _font(20 if orientation == "vertical" else 16)
+    font = _font(26)
+    small = _font(22)
+    tiny = _font(18)
+    endzone_font = _font(40 if orientation == "vertical" else 32)
 
     # Layer 1: pitch base. Use the weather-themed FFB pitch PNG when
     # we have one (full bitmap with LoS + hash marks baked in); fall
@@ -165,33 +175,91 @@ def render_tableau(
     # Layer 3: endzone team-name labels (drawn after logos so the text isn't washed).
     _draw_endzone_labels(img, draw, lay, home_name, away_name, endzone_font)
     # Layer 3b: row coordinate labels along the long-axis sides of the pitch.
-    _draw_coord_labels(img, lay, _font(11))
+    _draw_coord_labels(img, lay, _font(22))
     # Layer 4: header bar above the pitch.
-    draw.text((lay.ox, 14), _header_text(play), fill=TEXT, font=font)
-    # Layer 5: ball.
-    _draw_ball(draw, lay, state)
-    # Layer 6: players + their state markers + the highlight ring.
+    draw.text((lay.ox, 28), _header_text(play, weather=weather), fill=TEXT, font=font)
+    # Layer 5: players + their state markers + the highlight ring.
     _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
+    # Layer 6: ball — drawn AFTER players so the held-ball overlay
+    # sits over the carrier's sprite when the sprite doesn't already
+    # show the ball-pose variant.
+    _draw_ball(img, draw, lay, state, sprites)
+    # Layer 6b: BLITZ badge on the OPPONENT that was marked against
+    # (the block defender during the blitz). We only show the badge
+    # when we actually know who that was — for plays where the action
+    # was Blitz but no block landed (e.g. a self-kill on the GFI to
+    # contact), the chip would have nowhere honest to anchor.
+    if play.was_blitz and play.blitz_target_id and blitz_active:
+        _draw_blitz_badge(img, draw, lay, state, play.blitz_target_id)
     # Layer 7: dice rolls that produced this play, positioned over the actor.
     if dice:
         _draw_dice(img, lay, state, dice, targets, tiny)
-    # Layer 8: caption strip.
-    _draw_caption(draw, lay, play, state, font, small)
+    # Layer 8: caption strip + per-player stats line(s) + dugout status.
+    next_y = _draw_caption(draw, lay, play, state, font, small)
+    _draw_stats_lines(draw, lay, play, player_lookup, small, y_start=next_y)
+    _draw_dugout_strip(draw, lay, state, player_lookup,
+                        home_name=home_name, away_name=away_name, font=small)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.convert("RGB").save(out_path)
     return out_path
 
 
-def _draw_ball(draw: ImageDraw.ImageDraw, lay: Layout, state: FieldState) -> None:
+_HOLDBALL_ICON_CACHE: Image.Image | None = None
+_BALL_ICON_CACHE: Image.Image | None = None
+
+
+def _draw_ball(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
+               state: FieldState, sprites: dict[str, dict[str, Image.Image]]) -> None:
+    """Always render the ball state. Two cases:
+
+      - Held: stamp FFB decorations/holdball.png on top of the
+        carrier's tile (same overlay the FFB Java client paints
+        for `pWithBall=true`).
+      - Loose (passed / bouncing / kicked): stamp game/sball at the
+        coordinate so the viewer can track it across bounces.
+
+    Falls back to a plain circle only when the FFB decoration asset
+    can't be fetched. `sprites` is unused but kept in the signature
+    for forward-compat if/when we add per-roster ball-pose variants."""
     if not state.ball:
         return
     bx, by = state.ball
     if not (0 <= bx < PITCH_WIDTH and 0 <= by < PITCH_HEIGHT):
         return
     cx, cy = lay.bb_to_screen(bx, by)
-    r = TILE // 4
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=BALL_COLOR)
+    holder_pid = next((pid for pid, p in state.players.items() if p == (bx, by)), None)
+    if holder_pid:
+        global _HOLDBALL_ICON_CACHE
+        if _HOLDBALL_ICON_CACHE is None:
+            from . import sprites as sm
+            _HOLDBALL_ICON_CACHE = sm.fetch_ffb_decoration("holdball")
+        size = max(24, TILE // 2)
+        if _HOLDBALL_ICON_CACHE is not None:
+            icon = _HOLDBALL_ICON_CACHE
+            if icon.size != (size, size):
+                icon = icon.resize((size, size), resample=Image.LANCZOS)
+            img.alpha_composite(icon, (cx - size // 2, cy - size // 2 - 4))
+            return
+        r = size // 2
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                     fill=BALL_COLOR, outline=(30, 20, 10), width=max(2, r // 6))
+        return
+    # Loose ball — use FFB's standalone ball asset at the coordinate.
+    global _BALL_ICON_CACHE
+    if _BALL_ICON_CACHE is None:
+        from . import sprites as sm
+        _BALL_ICON_CACHE = sm.fetch_ffb_decoration("game/sball_60x60")
+    size = max(24, TILE // 2)
+    if _BALL_ICON_CACHE is not None:
+        icon = _BALL_ICON_CACHE
+        if icon.size != (size, size):
+            icon = icon.resize((size, size), resample=Image.LANCZOS)
+        img.alpha_composite(icon, (cx - size // 2, cy - size // 2))
+        return
+    r = size // 2
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                 fill=BALL_COLOR, outline=(30, 20, 10), width=max(2, r // 6))
 
 
 def _draw_players(
@@ -227,17 +295,22 @@ def _draw_players(
         is_dead = base_state in (_STATE_KO, _STATE_BH, _STATE_SI, _STATE_RIP)
 
         if pid in involved:
+            # Translucent dim-yellow halo behind the sprite. Was a
+            # fully-opaque bright disc — too loud, drew the eye away
+            # from the dice/action. ~45% alpha + slightly muted yellow
+            # still flags the involved player without screaming.
             ring_r = r + (5 if sprite_pair else 4)
-            draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], fill=HIGHLIGHT)
+            _faint_disc(img, cx, cy, ring_r, (220, 180, 30), alpha=115)
 
-        # Team-colour ring under the sprite. A thin outline (no fill)
-        # avoids the muddy red+green composite the faint-disc approach
-        # produced - the sprite sits cleanly inside a clear colour band.
-        ring_r = r + 1
-        draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r],
-                     outline=color, width=2)
+        # The FFB sprite columns are already team-tinted (home cols 0/1,
+        # away cols 2/3) so we trust the sprite to convey team identity.
+        # No extra coloured ring under it — that read as a contradiction
+        # against the sprite's own colour scheme. Players without a
+        # usable sprite still get a colour-disc fallback below.
 
         if sprite_pair:
+            # FFB icon sheets don't ship ball-in-hand variants — the
+            # ball is always a decoration overlay (see _draw_ball).
             sprite = sprite_pair["moving" if is_moving else "still"]
             sw, sh = sprite.size
             scale = (TILE - 4) / max(sw, sh)
@@ -275,6 +348,49 @@ def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
     overlay = Image.new("RGBA", (r * 2 + 2, r * 2 + 2), (0, 0, 0, 0))
     ImageDraw.Draw(overlay).ellipse([0, 0, r * 2, r * 2], fill=color + (alpha,))
     img.alpha_composite(overlay, (cx - r, cy - r))
+
+
+_TARGET_ICON_CACHE: Image.Image | None = None
+
+def _draw_blitz_badge(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
+                       state: FieldState, target_pid: str) -> None:
+    """Overlay the FFB target/crosshair icon on the OPPONENT the
+    blitzer marked against — same visual the FFB Java client uses
+    when the player is selecting a blitz target."""
+    anchor_pid = target_pid
+    if not anchor_pid:
+        return
+    anchor_pos = state.players.get(anchor_pid)
+    if not anchor_pos:
+        return
+    ax, ay = anchor_pos
+    if not (0 <= ax < PITCH_WIDTH and 0 <= ay < PITCH_HEIGHT):
+        return
+    cx, cy = lay.bb_to_screen(ax, ay)
+    global _TARGET_ICON_CACHE
+    if _TARGET_ICON_CACHE is None:
+        from . import sprites
+        _TARGET_ICON_CACHE = sprites.fetch_ffb_decoration("target")
+    # Scale the 15x15 source ~2x with bicubic so the edges stay clean
+    # instead of nearest-blocky, and keep it small enough that the
+    # player tile underneath is still readable.
+    desired = max(24, TILE // 2 + 4)
+    icon = _TARGET_ICON_CACHE
+    if icon is not None:
+        if icon.size != (desired, desired):
+            icon = icon.resize((desired, desired), resample=Image.BICUBIC)
+        img.alpha_composite(icon, (cx - desired // 2, cy - desired // 2))
+        return
+    # Fallback: drawn crosshair if the asset couldn't be fetched.
+    r_outer = TILE // 2 + 4
+    width = max(2, TILE // 14)
+    color = HIGHLIGHT
+    draw.ellipse([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer],
+                 outline=color, width=width)
+    draw.line([cx - r_outer - 6, cy, cx - r_outer + 4, cy], fill=color, width=width)
+    draw.line([cx + r_outer - 4, cy, cx + r_outer + 6, cy], fill=color, width=width)
+    draw.line([cx, cy - r_outer - 6, cx, cy - r_outer + 4], fill=color, width=width)
+    draw.line([cx, cy + r_outer - 4, cx, cy + r_outer + 6], fill=color, width=width)
 
 
 def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,
@@ -318,7 +434,97 @@ def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,
             y += sh + gap
 
 
-def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> None:
+def _draw_stats_lines(
+    draw: ImageDraw.ImageDraw,
+    lay: Layout,
+    play: PivotalPlay,
+    player_lookup: dict[str, PlayerInfo],
+    font,
+    *,
+    y_start: int | None = None,
+) -> None:
+    """One short stats/skills line per featured player.
+
+    Format per line:
+      "Name (Race) — MA7 ST3 AG2+ PA3+ AV9+ — Block, Sidestep, ..."
+
+    For TDs / interceptions / blunders we show the actor only. For
+    casualties we show victim AND inflicter (two lines). Skills list
+    is truncated to fit the canvas width.
+    """
+    ids_in_order: list[tuple[str, tuple[int, int, int]]] = []
+    if play.kind == "casualty":
+        if play.player_id:
+            ids_in_order.append((play.player_id, AWAY_COLOR if play.team_name == play.against_team else HOME_COLOR))
+        if play.inflicter_id:
+            # Inflicter is on the OPPOSITE team to the victim.
+            ids_in_order.append((play.inflicter_id, AWAY_COLOR))
+    else:
+        if play.player_id:
+            ids_in_order.append((play.player_id, HOME_COLOR))
+
+    # Resolve actor side via player_lookup so colours are right.
+    cap_y = lay.oy + lay.pitch_h + (8 if lay.orientation == "vertical" else _COORD_BAND + 8)
+    # Stats lines slot directly after whatever caption text was drawn.
+    y = y_start if y_start is not None else cap_y + 72
+    line_h = 24
+    for pid, _fallback in ids_in_order:
+        info = player_lookup.get(pid)
+        if not info:
+            continue
+        color = HOME_COLOR if info.side == "home" else AWAY_COLOR
+        bits = []
+        if info.movement is not None: bits.append(f"MA{info.movement}")
+        if info.strength is not None: bits.append(f"ST{info.strength}")
+        if info.agility is not None:  bits.append(f"AG{info.agility}+")
+        if info.passing is not None:  bits.append(f"PA{info.passing}+")
+        if info.armour is not None:   bits.append(f"AV{info.armour}+")
+        stats = " ".join(bits)
+        skill_list = list(info.skills)
+        skills = ", ".join(skill_list) if skill_list else "—"
+        prefix = f"#{info.number or '-':<2} {info.name}  •  {stats}  •  "
+        line = prefix + skills
+        # Trim skills from the tail one by one until the line fits.
+        max_w = lay.img_w - 2 * lay.ox
+        while skill_list and _text_size(draw, line, font)[0] > max_w:
+            skill_list.pop()
+            skills = (", ".join(skill_list) + ", …") if skill_list else "…"
+            line = prefix + skills
+        draw.text((lay.ox, y), line, fill=color, font=font)
+        y += line_h
+
+
+def _draw_dugout_strip(
+    draw: ImageDraw.ImageDraw,
+    lay: Layout,
+    state: FieldState,
+    player_lookup: dict[str, PlayerInfo],
+    *,
+    home_name: str | None,
+    away_name: str | None,
+    font,
+) -> None:
+    """Show each team's off-pitch player counts at the bottom of the
+    canvas: reserves / KO / BH / SI / RIP / banned. A glimpse of the
+    state of the match."""
+    counts = state.dugout_counts(player_lookup)
+    abbrev = lambda n: (n[:14] + "…") if n and len(n) > 15 else (n or "")
+    line_h = 24
+    # Caption uses ~72 px, stats lines take 0-2 lines (24 px each).
+    # Anchor the dugout strip near the BOTTOM of CAPTION_H so we don't
+    # need to know how many stats lines were drawn above.
+    y = lay.oy + lay.pitch_h + CAPTION_H - 2 * line_h - 12
+    cats = ("res", "ko", "bh", "si", "rip", "ban")
+    for side, color, name in (("home", HOME_COLOR, abbrev(home_name)),
+                                ("away", AWAY_COLOR, abbrev(away_name))):
+        bits = "  ".join(f"{k.upper()} {counts[side][k]}" for k in cats)
+        label = f"{name or side.upper():<14}  {bits}"
+        draw.text((lay.ox, y), label, fill=color, font=font)
+        y += line_h
+
+
+def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font, small) -> int:
+    """Render the [weight] + wrapped headline. Returns the y of the next free row."""
     weight_str = f"[{play.weight:.2f}]"
     # In horizontal mode the row labels occupy the band immediately below
     # the pitch, so the caption needs to start below that.
@@ -328,14 +534,10 @@ def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font,
     wt_w, _ = _text_size(draw, weight_str, font)
     caption_x = lay.ox + wt_w + 6
     max_caption_w = lay.img_w - caption_x - lay.ox
-    lines = _wrap_text(draw, play.headline(), font, max_caption_w)
-    for i, line in enumerate(lines[:3]):
-        draw.text((caption_x, cap_y + i * 14), line, fill=TEXT, font=font)
-    n_off = len(state.off_pitch())
-    if n_off:
-        draw.text((lay.ox, cap_y + len(lines) * 14 + 4),
-                  f"({n_off} players off-pitch / in dugout)",
-                  fill=DIM_TEXT, font=small)
+    lines = _wrap_text(draw, play.headline(), font, max_caption_w)[:3]
+    for i, line in enumerate(lines):
+        draw.text((caption_x, cap_y + i * 28), line, fill=TEXT, font=font)
+    return cap_y + len(lines) * 28 + 8
 
 
 def _targets_for_play(play: PivotalPlay) -> TableauTargets:
@@ -433,8 +635,9 @@ def _draw_endzone_labels(
 def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bool):
     """Render text in a box on an opaque dark strip so it pops against
     any pitch texture. Rotate 90° if the box is taller than it is wide."""
-    # Dark backing strip across the whole endzone band.
-    backing = Image.new("RGBA", (w, h), (10, 14, 16, 215))
+    # Dark backing strip across the whole endzone band — nearly fully
+    # opaque so the team name pops against any pitch texture.
+    backing = Image.new("RGBA", (w, h), (10, 14, 16, 250))
     img.alpha_composite(backing, (ox, oy))
 
     if not rotate:
@@ -488,7 +691,8 @@ def _draw_coord_labels(img: Image.Image, lay: Layout, font) -> None:
 
 def _chip_label(img: Image.Image, x: int, y: int, w: int, h: int,
                  text: str, color, font, draw: ImageDraw.ImageDraw) -> None:
-    chip = Image.new("RGBA", (w, h), (12, 16, 18, 230))
+    # Nearly-opaque dark chip so the digit reads clearly against any pitch.
+    chip = Image.new("RGBA", (w, h), (12, 16, 18, 250))
     img.alpha_composite(chip, (x, y))
     tw, _ = _text_size(draw, text, font)
     draw.text((x + (w - tw) // 2, y + 1), text, fill=color, font=font)
@@ -532,7 +736,7 @@ def _paste_centered_logo(canvas: Image.Image, logo: Image.Image,
     canvas.paste(logo_resized, (cx - new_size[0] // 2, cy - new_size[1] // 2), logo_resized)
 
 
-def _header_text(p: PivotalPlay) -> str:
+def _header_text(p: PivotalPlay, *, weather: str | None = None) -> str:
     bits = [p.team_name, "vs", p.against_team]
     if p.score_home is not None and p.score_away is not None:
         bits.append(f"  {p.score_home}-{p.score_away}")
@@ -540,6 +744,8 @@ def _header_text(p: PivotalPlay) -> str:
         bits.append(f"  half {p.half}")
     if p.turn:
         bits.append(f"  turn {p.turn}")
+    if weather:
+        bits.append(f"  •  {weather}")
     return " ".join(bits)
 
 

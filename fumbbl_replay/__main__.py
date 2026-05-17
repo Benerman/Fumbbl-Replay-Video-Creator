@@ -48,15 +48,32 @@ def main(argv: list[str] | None = None) -> int:
                         help="Skip the FUMBBL position sprite fetch; render plain coloured tokens")
     parser.add_argument("--orientation", choices=("vertical", "horizontal"), default="vertical",
                         help="Pitch orientation in tableaux/GIFs (default: vertical)")
+    parser.add_argument("--pitch", choices=("auto", "nice", "sunny", "heat", "rain", "blizzard"),
+                        default="auto",
+                        help="Pitch background (default: auto - pick by replay weather)")
     parser.add_argument("--commentary", action="store_true",
                         help="Generate one whimsical commentary line per pivotal play")
-    parser.add_argument("--commentary-backend", choices=("ollama", "openai", "claude"),
+    parser.add_argument("--commentary-backend", choices=("template", "ollama", "openai", "claude"),
                         default=None,
-                        help="LLM backend for commentary (default: ollama; env: FUMBBL_COMMENTARY_BACKEND)")
+                        help="Commentary backend (default: template - local templates, no LLM, no install; env: FUMBBL_COMMENTARY_BACKEND)")
     parser.add_argument("--commentary-model", default=None,
                         help="Model name for the chosen backend (default per backend; env: FUMBBL_COMMENTARY_MODEL)")
     parser.add_argument("--commentary-base-url", default=None,
                         help="Override base URL for ollama/openai backends (e.g. http://localhost:11434)")
+    parser.add_argument("--tts", type=Path, default=None,
+                        help="Generate per-play TTS audio into this directory (forces --commentary)")
+    parser.add_argument("--sounds", type=Path, default=None,
+                        help="Copy FFB game-event SFX (cheers, thuds, whistles) into this directory")
+    parser.add_argument("--mix", type=Path, default=None,
+                        help="Mix per-play TTS + SFX into a single mp3 (auto-runs --commentary/--tts/--sounds; requires ffmpeg)")
+    parser.add_argument("--video", type=Path, default=None,
+                        help="Compose final highlight MP4 from per-play GIFs + mixed MP3s (auto-runs --gifs/--mix; requires ffmpeg)")
+    parser.add_argument("--tts-backend", choices=("kokoro", "say", "pyttsx3", "openai"), default=None,
+                        help="TTS backend (default: kokoro - local neural TTS; env: FUMBBL_TTS_BACKEND)")
+    parser.add_argument("--tts-voice", default=None,
+                        help="Voice for the chosen TTS backend (default per backend; env: FUMBBL_TTS_VOICE)")
+    parser.add_argument("--tts-meme", action="store_true",
+                        help="Use af_nicole (ASMR-style) as the voice — comedy mode")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -115,8 +132,26 @@ def main(argv: list[str] | None = None) -> int:
         events=event_list, player_lookup=player_lookup,
     )
 
+    # --video implies the full pipeline below it: we need gifs +
+    # mixed audio. Auto-derive the intermediate dirs next to the
+    # video output so a one-flag invocation works.
+    if args.video:
+        if not args.gifs:
+            args.gifs = args.video.parent / args.orientation / "gifs"
+        if not args.mix:
+            args.mix = args.video.parent / "mixed"
+
+    # When --mix is requested we auto-derive intermediate output dirs
+    # for commentary/TTS next to the mix dir so the user doesn't have
+    # to wire up multiple flags by hand. SFX are served from the
+    # shared cache root by default - we only physically copy them
+    # into a per-match directory when --sounds DIR is set.
+    want_commentary = bool(args.commentary or args.tts or args.mix)
+    want_tts_dir = args.tts or (args.mix.parent / "audio" if args.mix else None)
+    kinds = {i: p.kind for i, p in enumerate(analysis.pivotal, 1)}
+
     commentary_lines: dict[int, str] = {}
-    if args.commentary:
+    if want_commentary:
         from . import commentary
         try:
             commentary_lines = commentary.generate_commentary(
@@ -128,6 +163,53 @@ def main(argv: list[str] | None = None) -> int:
             log.info("got commentary for %d/%d plays", len(commentary_lines), len(analysis.pivotal))
         except Exception as e:
             log.warning("commentary generation failed: %s", e)
+
+    tts_paths: dict[int, Path] = {}
+    tts = None
+    voice_a: str | None = None
+    if want_tts_dir:
+        from . import tts
+
+        # Pick the play-by-play voice. Seed by match id so a given
+        # match gets a stable booth across reruns. --tts-meme swaps in
+        # the ASMR-style nicole.
+        voice_a = args.tts_voice
+        if (args.tts_backend or tts.DEFAULT_BACKEND) == "kokoro" and not voice_a:
+            seed = ref.match_id or ref.replay_id or 0
+            voice_a, _ = tts.pick_voice_pair(seed, meme=args.tts_meme)
+            log.info("picked voice for match %s: %s", seed, voice_a)
+
+        try:
+            tts_paths = tts.generate_audio(
+                commentary_lines, want_tts_dir,
+                pivotal_kinds=kinds,
+                backend=args.tts_backend,
+                voice=voice_a,
+            )
+            log.info("rendered %d audio clips to %s", len(tts_paths), want_tts_dir)
+        except Exception as e:
+            log.warning("TTS generation failed: %s", e)
+
+    sfx_paths: dict[int, list[Path]] = {}
+    if args.sounds or args.mix:
+        from . import sounds as sounds_mod
+        try:
+            if args.sounds:
+                # User wants a self-contained per-match copy.
+                sfx_paths = sounds_mod.install_play_sounds(analysis.pivotal, args.sounds)
+                log.info("copied SFX for %d plays into %s (also cached at root)",
+                         len(sfx_paths), args.sounds)
+            else:
+                # Reference the shared cache directly.
+                sfx_paths = sounds_mod.resolve_play_sounds(analysis.pivotal)
+                log.info("resolved cached SFX for %d plays", len(sfx_paths))
+        except Exception as e:
+            log.warning("SFX resolution failed: %s", e)
+
+    # Mix is deferred until AFTER gifs render so it can use each
+    # play's impact_ms (when the visual climax lands) and total_ms.
+    # When --gifs isn't requested, mix still runs with default
+    # offsets (everything from t=0, as before).
 
     if args.json:
         out = dataclasses.asdict(analysis)
@@ -153,17 +235,23 @@ def main(argv: list[str] | None = None) -> int:
     home_logo_img = None
     away_logo_img = None
     pitch_bg = None
+    weather: str | None = None
     if args.tableaux or args.gifs:
         home_logo_id = _logo_id_from_team(team_home) or _logo_id_from_replay_team(replay, "home")
         away_logo_id = _logo_id_from_team(team_away) or _logo_id_from_replay_team(replay, "away")
         home_logo_img = sprites.fetch_team_logo(home_logo_id)
         away_logo_img = sprites.fetch_team_logo(away_logo_id)
-        # Weather-themed pitch background from FFB's Default.zip.
+        # Pitch background. Auto = use replay weather; otherwise force.
         from . import pitches
         weather = pitches.weather_from_replay(replay)
-        pitch_bg = pitches.fetch_pitch(weather)
-        if pitch_bg is not None:
-            log.info("loaded pitch background for weather %r", weather)
+        if args.pitch == "auto":
+            pitch_bg = pitches.fetch_pitch(weather)
+            if pitch_bg is not None:
+                log.info("loaded pitch background for weather %r", weather)
+        else:
+            pitch_bg = pitches.fetch_pitch_by_short_name(args.pitch)
+            if pitch_bg is not None:
+                log.info("loaded forced pitch %r", args.pitch)
 
     if args.tableaux or args.gifs:
         from . import dice as dice_mod
@@ -205,27 +293,148 @@ def main(argv: list[str] | None = None) -> int:
                 home_logo=home_logo_img, away_logo=away_logo_img,
                 dice=dice_for_play,
                 pitch_background=pitch_bg,
+                weather=weather,
             )
             n += 1
         log.info("rendered %d tableaux to %s", n, args.tableaux)
 
+    gif_paths: dict[int, Path] = {}
+    frames_dirs: dict[int, Path] = {}
+    impact_offsets_ms: dict[int, int] = {}
+    target_durations_ms: dict[int, int] = {}
     if args.gifs:
         from . import animate
+        # When --video is set we also dump a full-res PNG frame sequence
+        # per play so the video encoder skips the GIF palette pass.
+        frames_root = (args.video.parent / args.orientation / "frames") if args.video else None
         n = 0
         for i, p in enumerate(analysis.pivotal, 1):
             if p.command_nr is None:
                 continue
             out = args.gifs / f"{i:02d}_{p.kind}_{p.command_nr}.gif"
-            animate.render_play_gif(
+            per_play_frames_dir = (
+                frames_root / f"{i:02d}_{p.kind}_{p.command_nr}"
+                if frames_root else None
+            )
+            result = animate.render_play_gif(
                 replay, p, player_lookup or {}, out,
                 sprites=player_sprites,
                 orientation=args.orientation,
                 home_name=home_name, away_name=away_name,
                 home_logo=home_logo_img, away_logo=away_logo_img,
                 pitch_background=pitch_bg,
+                weather=weather,
+                frames_dir=per_play_frames_dir,
             )
+            gif_paths[i] = result.path
+            if result.frames_dir:
+                frames_dirs[i] = result.frames_dir
+            impact_offsets_ms[i] = result.impact_ms
+            target_durations_ms[i] = result.total_ms
             n += 1
         log.info("rendered %d gifs to %s", n, args.gifs)
+
+    mix_paths: dict[int, Path] = {}
+    if args.mix:
+        from . import mix as mix_mod
+        try:
+            mix_paths = mix_mod.mix_match_audio(
+                tts_paths, sfx_paths, kinds, args.mix,
+                impact_offsets_ms=impact_offsets_ms,
+                target_durations_ms=target_durations_ms,
+            )
+            log.info("mixed %d per-play clips into %s", len(mix_paths), args.mix)
+        except Exception as e:
+            log.warning("audio mix failed: %s", e)
+
+    if args.video:
+        from . import compose, framing
+        import shutil as _shutil
+        if not gif_paths:
+            log.warning("--video needs --gifs output; nothing to compose")
+        elif not mix_paths:
+            log.warning("--video needs --mix output; nothing to compose")
+        else:
+            # Render intro + outro title cards and their narrated audio,
+            # then encode as still-image MP4 clips that the compose
+            # step will prepend / append to the per-play sequence.
+            intro_clip_path: Path | None = None
+            outro_clip_path: Path | None = None
+            try:
+                framing_root = args.video.parent / args.orientation / "framing"
+                framing_root.mkdir(parents=True, exist_ok=True)
+                match_stats = framing.compute_match_stats(replay, analysis)
+
+                intro_png = framing_root / "intro.png"
+                framing.render_intro_slide(
+                    analysis, player_lookup or {}, intro_png,
+                    orientation=args.orientation,
+                    home_logo=home_logo_img, away_logo=away_logo_img,
+                )
+                outro_png = framing_root / "outro.png"
+                framing.render_outro_slide(
+                    analysis, match_stats, outro_png,
+                    orientation=args.orientation,
+                    home_logo=home_logo_img, away_logo=away_logo_img,
+                )
+
+                # TTS narration for intro + outro using the existing voice.
+                if want_tts_dir:
+                    intro_line = framing.generate_intro_line(analysis, player_lookup or {})
+                    outro_line = framing.generate_outro_line(analysis)
+                    intro_audio_dir = want_tts_dir.parent / "framing_tts"
+                    intro_audio_paths = tts.generate_audio(
+                        {0: intro_line}, intro_audio_dir,
+                        pivotal_kinds={0: "intro"},
+                        backend=args.tts_backend,
+                        voice=voice_a,
+                    )
+                    outro_audio_paths = tts.generate_audio(
+                        {0: outro_line}, intro_audio_dir,
+                        pivotal_kinds={0: "outro"},
+                        backend=args.tts_backend,
+                        voice=voice_a,
+                    )
+                    intro_audio = intro_audio_paths.get(0)
+                    outro_audio = outro_audio_paths.get(0)
+
+                    clip_work = args.video.parent / f"_clips_{args.video.stem}"
+                    clip_work.mkdir(parents=True, exist_ok=True)
+                    if intro_audio and intro_audio.exists():
+                        intro_clip_path = clip_work / "00_intro.mp4"
+                        if not compose.encode_still_clip(intro_png, intro_audio,
+                                                          intro_clip_path,
+                                                          min_duration_ms=4000):
+                            intro_clip_path = None
+                    if outro_audio and outro_audio.exists():
+                        outro_clip_path = clip_work / "99_outro.mp4"
+                        if not compose.encode_still_clip(outro_png, outro_audio,
+                                                          outro_clip_path,
+                                                          min_duration_ms=4000):
+                            outro_clip_path = None
+            except Exception as e:
+                log.warning("intro/outro generation failed: %s", e)
+
+            try:
+                result = compose.compose_highlight_reel(
+                    gif_paths, mix_paths, kinds, args.video,
+                    frames_dirs_by_play=frames_dirs,
+                    intro_clip=intro_clip_path,
+                    outro_clip=outro_clip_path,
+                )
+                if result:
+                    log.info("composed highlight video at %s", result)
+                # Clean up the PNG frame sequence (~250 MB for a typical
+                # match). We keep the per-play GIFs since users often
+                # want those standalone.
+                for d in frames_dirs.values():
+                    if d.exists():
+                        _shutil.rmtree(d, ignore_errors=True)
+                parent = (args.video.parent / args.orientation / "frames")
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except Exception as e:
+                log.warning("video compose failed: %s", e)
 
 
 def _logo_id_from_team(team: dict | None) -> int | None:

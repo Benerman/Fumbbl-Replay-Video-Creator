@@ -44,6 +44,33 @@ _CACHE_DIR = Path(os.environ.get(
 _pitch_cache: dict[str, Image.Image] = {}
 
 
+_SHORT_TO_FILE = {
+    "nice": "nice.png", "sunny": "sunny.png", "heat": "heat.png",
+    "rain": "rain.png", "blizzard": "blizzard.png",
+}
+
+
+def fetch_pitch_by_short_name(short: str) -> Image.Image | None:
+    """Force a specific pitch (nice / sunny / heat / rain / blizzard)."""
+    filename = _SHORT_TO_FILE.get(short)
+    if not filename:
+        return None
+    if filename in _pitch_cache:
+        return _pitch_cache[filename]
+    cache_path = _CACHE_DIR / filename
+    if not cache_path.exists():
+        try:
+            _download_and_unzip()
+        except Exception as e:
+            log.warning("could not fetch FUMBBL pitches zip: %s", e)
+            return None
+    if not cache_path.exists():
+        return None
+    im = Image.open(cache_path).convert("RGBA")
+    _pitch_cache[filename] = im
+    return im
+
+
 def fetch_pitch(weather: str | None) -> Image.Image | None:
     """Return the pitch background PNG for the given weather, or None
     if we can't resolve / fetch it."""

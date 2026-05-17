@@ -32,6 +32,33 @@ from .fumbbl_api import image_url
 
 
 _BASE_CASUALTY_WEIGHT = {"rip": 0.8, "si": 0.5, "bh": 0.2}
+
+
+# Spell out FFB's abbreviated injury suffixes. Source: SeriousInjury
+# enum in bb-common — FFB itself uses "(-1 AV)" in buttonText, we go
+# one step further and write out the stat names so casual viewers
+# know what the injury actually costs.
+_INJURY_SUFFIX_EXPANSIONS = {
+    "(-AV)": "(-1 Armor Value)",
+    "(-MA)": "(-1 Movement)",
+    "(-PA)": "(-1 Passing)",
+    "(-AG)": "(-1 Agility)",
+    "(-ST)": "(-1 Strength)",
+    "(MNG)": "(Miss Next Game)",
+    "(NI)":  "(Niggling Injury)",
+    "(RIP)": "(Dead)",
+}
+
+
+def _expand_injury_label(label: str | None) -> str:
+    """Turn FFB's "Head Injury (-AV)" into "Head Injury (-1 Armor Value)".
+    Pass-through unchanged when no recognised suffix appears."""
+    if not label:
+        return ""
+    out = label
+    for abbrev, full in _INJURY_SUFFIX_EXPANSIONS.items():
+        out = out.replace(abbrev, full)
+    return out
 _BASE_TD_WEIGHT = 1.0
 _BASE_INT_WEIGHT = 0.7
 
@@ -78,6 +105,8 @@ class PivotalPlay:
     inflicter_team: str | None = None
     injury_label: str | None = None
     reason: str | None = None        # casualty: "blocked" / "fouled" / "crowdPushed"
+    was_blitz: bool = False          # True when the play was declared a Blitz action
+    blitz_target_id: str | None = None  # the OPPONENT blocked during the blitz (for badge anchor)
     tags: list[str] = field(default_factory=list)
 
     def headline(self) -> str:
@@ -116,7 +145,7 @@ class PivotalPlay:
         if self.inflicter_name and self.reason != "crowdPushed":
             by = f" by {self.inflicter_name}" + (f" ({self.inflicter_team})" if self.inflicter_team else "")
         victim = f"{self.player_name} ({self.team_name})" if self.player_name else f"a {self.team_name} player"
-        label = f" - {self.injury_label}" if self.injury_label and self.detail.lower() != "rip" else ""
+        label = f" - {_expand_injury_label(self.injury_label)}" if self.injury_label and self.detail.lower() != "rip" else ""
         return f"{victim} was {sev}{by}{when}{label}"
 
     def _td_verb(self) -> str:
@@ -309,6 +338,8 @@ def _pivotal_from_events(
                 score_home=e.score_home, score_away=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
+                was_blitz=e.was_blitz,
+                blitz_target_id=e.blitz_target_id,
                 tags=tags,
             ))
         elif e.kind == "interception":
@@ -321,6 +352,8 @@ def _pivotal_from_events(
                 score_home=e.score_home, score_away=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
+                was_blitz=e.was_blitz,
+                blitz_target_id=e.blitz_target_id,
                 tags=[],
             ))
         elif e.kind in ("kill", "serious_injury", "badly_hurt"):
@@ -348,6 +381,8 @@ def _pivotal_from_events(
                 inflicter_team=inflicter_team,
                 injury_label=e.detail,
                 reason=e.reason,
+                was_blitz=e.was_blitz,
+                blitz_target_id=e.blitz_target_id,
                 tags=tags,
             ))
         elif e.kind in ("self_kill", "triple_skull", "double_skull", "clutch_fail"):
@@ -394,6 +429,8 @@ def _blunder_play(e: Event, team: TeamInfo, opp: TeamInfo, resolve_name) -> Pivo
         player_name=resolve_name(team, e.player_id),
         injury_label=e.detail if e.kind == "self_kill" else None,
         reason=e.reason,
+        was_blitz=e.was_blitz,
+        blitz_target_id=e.blitz_target_id,
         tags=[],
     )
 

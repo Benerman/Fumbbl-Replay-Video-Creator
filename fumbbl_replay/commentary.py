@@ -29,11 +29,19 @@ from typing import Any
 
 import requests
 
-from .analyzer import MatchAnalysis
+from .analyzer import MatchAnalysis, _expand_injury_label
+
+
+def _expand_for_commentary(label: str | None) -> str | None:
+    """Same expansion as the headline, but TTS-friendly: full words ("-1
+    Armor Value") so Kokoro doesn't read "AV" as two letters."""
+    if not label:
+        return label
+    return _expand_injury_label(label)
 
 log = logging.getLogger(__name__)
 
-DEFAULT_BACKEND = "ollama"
+DEFAULT_BACKEND = "template"           # no AI, no install, deterministic
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
@@ -91,9 +99,26 @@ def generate_commentary(
 
     backend = backend or os.environ.get("FUMBBL_COMMENTARY_BACKEND", DEFAULT_BACKEND)
     model = model or os.environ.get("FUMBBL_COMMENTARY_MODEL")
-    user_prompt = _build_user_prompt(analysis)
 
     log.info("requesting commentary for %d pivotal plays via %s", len(analysis.pivotal), backend)
+    if backend == "template":
+        # Fully local, no install, no network. Deterministic templates
+        # filled from the structured pivotal-play data.
+        from .commentary_templates import render_template_lines
+        return render_template_lines(analysis)
+
+
+def generate_banter(analysis: MatchAnalysis) -> dict[int, str]:
+    """Short colour-commentator reactions, one per pivotal play.
+
+    Template-only for now since the banter pool is small and tightly
+    keyed to play kind/tags."""
+    if not analysis.pivotal:
+        return {}
+    from .commentary_templates import render_banter_lines
+    return render_banter_lines(analysis)
+
+    user_prompt = _build_user_prompt(analysis)
     if backend == "ollama":
         text = _call_ollama(user_prompt, model or DEFAULT_OLLAMA_MODEL,
                              base_url or os.environ.get("OLLAMA_BASE_URL", DEFAULT_OLLAMA_URL))
@@ -104,7 +129,7 @@ def generate_commentary(
     elif backend == "claude":
         text = _call_claude(user_prompt, model or DEFAULT_CLAUDE_MODEL)
     else:
-        raise ValueError(f"unknown commentary backend {backend!r}; choose ollama|openai|claude")
+        raise ValueError(f"unknown commentary backend {backend!r}; choose template|ollama|openai|claude")
 
     parsed = _parse_lines(text)
     return {item["play_index"]: item["line"] for item in parsed if "play_index" in item and "line" in item}
@@ -208,7 +233,7 @@ def _build_user_prompt(analysis: MatchAnalysis) -> str:
             "turn": p.turn,
             "tags": p.tags,
             "reason": p.reason,
-            "injury": p.injury_label,
+            "injury": _expand_for_commentary(p.injury_label),
         })
     return (
         f"Match: {analysis.summary_line()}\n"
