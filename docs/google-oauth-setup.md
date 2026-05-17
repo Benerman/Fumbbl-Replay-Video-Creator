@@ -42,33 +42,78 @@ download from that page is `client_secret.json`. Drop it in
 
 ### 3. Configure the OAuth consent screen
 
-You only need to do this once per project. The bot uses an
-**External** consent screen even if only you will sign in.
+You only need to do this once per project. Google rolled out a new
+console layout in late 2024 — the steps depend on which one you see.
+
+**Quick way to tell which layout you're on:** open **APIs &
+Services → OAuth consent screen**. If you see a row of **tabs**
+near the top (`Branding`, `Audience`, `Clients`, `Data Access`,
+`Verification center`), you're on the **new layout** — follow §3a.
+If you see a single long form with numbered steps (`App
+information` / `Scopes` / `Test users` / `Summary`), you're on the
+**classic layout** — follow §3b.
+
+#### 3a. New layout (post-2024)
+
+Each setting lives in its own tab. Go through them in order; you
+can come back any time.
+
+1. **Get started / Branding** tab
+   - **App name**: `FUMBBL Highlights Bot` (any human name).
+   - **User support email**: your email.
+   - **Developer contact email**: your email.
+   - Logo / app domain / links: leave blank.
+   - Click **Save**.
+
+2. **Audience** tab
+   - **User type**: **External**. (Internal only appears if you
+     have a Google Workspace org; pick External for personal use.)
+   - **Publishing status**: leave as **Testing** — that's fine
+     indefinitely as long as you stay under 100 test users.
+   - **Test users** section: click **+ Add users** and add every
+     Google account that will authorize the bot — your own, plus
+     any guild admins who will run `/highlight-config set-youtube`.
+     Up to 100.
+   - Click **Save**.
+
+3. **Data Access** tab  ← *this is where the scopes live now*
+   - Click **Add or remove scopes**.
+   - In the picker, search for `youtube` and check:
+     - `https://www.googleapis.com/auth/youtube.upload`
+     - `https://www.googleapis.com/auth/youtube.readonly`
+   - Click **Update**, then **Save** on the Data Access page.
+
+4. **Clients** tab → continue to step 4 below to create the
+   OAuth Client ID.
+
+#### 3b. Classic layout (pre-2024)
+
+If you see the old wizard:
 
 1. Left nav: **APIs & Services** → **OAuth consent screen**.
 2. **User Type**: External. Click **Create**.
 3. **App information**:
-   - **App name**: `FUMBBL Highlights Bot` (any human name)
+   - **App name**: `FUMBBL Highlights Bot`
    - **User support email**: your email
    - **Developer contact email**: your email
-   - Logo, app domain, links: leave blank — fine for personal use.
+   - Logo, app domain, links: leave blank.
 4. **Scopes**: click **Add or remove scopes**, search for
-   `youtube`, and check:
+   `youtube`, check:
    - `.../auth/youtube.upload`
    - `.../auth/youtube.readonly`
    Save and continue.
-5. **Test users**: while your app is in "Testing" mode (which is
-   fine for personal use) Google only allows logins from a list of
-   test users. Add **every Google account** you plan to authorize
-   from — your own account, plus any guild admins who will run
-   `/highlight-config set-youtube` from their server. Up to 100
-   test users.
+5. **Test users**: add every Google account that will authorize
+   the bot. Up to 100.
 6. **Summary**: review and click **Back to dashboard**.
 
-You don't need to publish the app — Testing mode works indefinitely
-as long as you stay under 100 test users and don't mind the
-"This app isn't verified" screen during authorization (you click
-**Advanced → Go to FUMBBL Highlights Bot (unsafe)** to proceed).
+#### Either way
+
+You don't need to publish the app. Testing mode works indefinitely
+as long as you stay under 100 test users. During the OAuth flow,
+test users will see a "This app isn't verified" screen — click
+**Advanced → Go to FUMBBL Highlights Bot (unsafe)** to proceed.
+Non-test-users see a hard block (this is the intended security
+boundary).
 
 ### 4. Create the OAuth Client ID
 
