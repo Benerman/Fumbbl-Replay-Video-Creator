@@ -23,8 +23,11 @@ from .events import PlayerInfo
 from .field_state import FieldState, PITCH_WIDTH, PITCH_HEIGHT
 
 
-# Tile size in pixels per pitch square.
-TILE = 28
+# Tile size in pixels per pitch square. Bumping this is the single
+# biggest lever on output sharpness — sprites are 35-pixel native cells,
+# so TILE=28 was shrinking them; TILE=56 gives them a clean 1.5x upscale
+# with NEAREST and the encoded video has more pixels for h264 to keep.
+TILE = 56
 
 # Player-state base values (low 4 bits of the bitmask FFB stores).
 _STATE_STANDING = 1
@@ -49,10 +52,10 @@ _PRONE_STATES = {_STATE_PRONE, _STATE_BLOCKED, _STATE_FALLING, _STATE_HIT_GROUND
 _MARKER_COLOR = (235, 40, 35)
 _MARKER_WIDTH = 3
 # Margins around the pitch. MARGIN_X needs to fit two-digit coord labels
-# (numbers 1-12 down each side / along each edge).
-MARGIN_X = 30
-MARGIN_TOP = 50
-CAPTION_H = 124  # caption + stats line(s) + dugout-status strip
+# (numbers 1-12 down each side / along each edge). Scales with TILE.
+MARGIN_X = 60
+MARGIN_TOP = 100
+CAPTION_H = 248  # caption + stats line(s) + dugout-status strip
 # Field colours.
 PITCH_GREEN = (40, 90, 50)
 PITCH_LINE = (200, 220, 200)
@@ -100,7 +103,7 @@ class Layout:
                 self.oy + bb_y * TILE + TILE // 2)
 
 
-_COORD_BAND = 16  # px reserved above/below the pitch for row labels (horizontal layout)
+_COORD_BAND = 32  # px reserved above/below the pitch for row labels (horizontal layout)
 
 
 def _layout(orientation: str) -> Layout:
@@ -149,10 +152,10 @@ def render_tableau(
 
     img = Image.new("RGBA", (lay.img_w, lay.img_h), (24, 30, 24, 255))
     draw = ImageDraw.Draw(img)
-    font = _font(13)
-    small = _font(11)
-    tiny = _font(9)
-    endzone_font = _font(20 if orientation == "vertical" else 16)
+    font = _font(26)
+    small = _font(22)
+    tiny = _font(18)
+    endzone_font = _font(40 if orientation == "vertical" else 32)
 
     # Layer 1: pitch base. Use the weather-themed FFB pitch PNG when
     # we have one (full bitmap with LoS + hash marks baked in); fall
@@ -166,9 +169,9 @@ def render_tableau(
     # Layer 3: endzone team-name labels (drawn after logos so the text isn't washed).
     _draw_endzone_labels(img, draw, lay, home_name, away_name, endzone_font)
     # Layer 3b: row coordinate labels along the long-axis sides of the pitch.
-    _draw_coord_labels(img, lay, _font(11))
+    _draw_coord_labels(img, lay, _font(22))
     # Layer 4: header bar above the pitch.
-    draw.text((lay.ox, 14), _header_text(play, weather=weather), fill=TEXT, font=font)
+    draw.text((lay.ox, 28), _header_text(play, weather=weather), fill=TEXT, font=font)
     # Layer 5: ball.
     _draw_ball(draw, lay, state)
     # Layer 6: players + their state markers + the highlight ring.
@@ -179,7 +182,7 @@ def render_tableau(
     # was Blitz but no block landed (e.g. a self-kill on the GFI to
     # contact), the chip would have nowhere honest to anchor.
     if play.was_blitz and play.blitz_target_id:
-        _draw_blitz_badge(img, draw, lay, state, play.blitz_target_id, _font(11))
+        _draw_blitz_badge(img, draw, lay, state, play.blitz_target_id, _font(22))
     # Layer 7: dice rolls that produced this play, positioned over the actor.
     if dice:
         _draw_dice(img, lay, state, dice, targets, tiny)
@@ -388,8 +391,8 @@ def _draw_stats_lines(
     # Resolve actor side via player_lookup so colours are right.
     cap_y = lay.oy + lay.pitch_h + (8 if lay.orientation == "vertical" else _COORD_BAND + 8)
     # Stats lines slot directly after whatever caption text was drawn.
-    y = y_start if y_start is not None else cap_y + 36
-    line_h = 12
+    y = y_start if y_start is not None else cap_y + 72
+    line_h = 24
     for pid, _fallback in ids_in_order:
         info = player_lookup.get(pid)
         if not info:
@@ -431,11 +434,11 @@ def _draw_dugout_strip(
     state of the match."""
     counts = state.dugout_counts(player_lookup)
     abbrev = lambda n: (n[:14] + "…") if n and len(n) > 15 else (n or "")
-    line_h = 12
-    # Caption uses ~36 px, stats lines take 0-2 lines (12 px each).
+    line_h = 24
+    # Caption uses ~72 px, stats lines take 0-2 lines (24 px each).
     # Anchor the dugout strip near the BOTTOM of CAPTION_H so we don't
     # need to know how many stats lines were drawn above.
-    y = lay.oy + lay.pitch_h + CAPTION_H - 2 * line_h - 6
+    y = lay.oy + lay.pitch_h + CAPTION_H - 2 * line_h - 12
     cats = ("res", "ko", "bh", "si", "rip", "ban")
     for side, color, name in (("home", HOME_COLOR, abbrev(home_name)),
                                 ("away", AWAY_COLOR, abbrev(away_name))):
@@ -458,8 +461,8 @@ def _draw_caption(draw, lay: Layout, play: PivotalPlay, state: FieldState, font,
     max_caption_w = lay.img_w - caption_x - lay.ox
     lines = _wrap_text(draw, play.headline(), font, max_caption_w)[:3]
     for i, line in enumerate(lines):
-        draw.text((caption_x, cap_y + i * 14), line, fill=TEXT, font=font)
-    return cap_y + len(lines) * 14 + 4
+        draw.text((caption_x, cap_y + i * 28), line, fill=TEXT, font=font)
+    return cap_y + len(lines) * 28 + 8
 
 
 def _targets_for_play(play: PivotalPlay) -> TableauTargets:

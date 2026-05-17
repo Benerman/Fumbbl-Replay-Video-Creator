@@ -127,17 +127,25 @@ def render_play_gif(
     if len(interesting_cmds) > max_frames:
         interesting_cmds = interesting_cmds[-max_frames:]
 
-    # Pre-extract dice for EVERY command in the window (not just the
-    # field-affecting ones), keyed by cmd_nr. The block roll often fires
-    # in a command that doesn't change field model state (so it wouldn't
-    # otherwise make `interesting_cmds`), but we still want the dice to
-    # appear on the next rendered frame and linger.
+    # Pre-extract dice for the play. We restrict to a NARROW per-kind
+    # window around play.command_nr - the broader movement window above
+    # is for drawing frames, but if we extract dice from the whole 60
+    # commands we pick up *other* players' block rolls (a teammate
+    # blocked 30 cmds before this one's snake-eyes) and they linger as
+    # phantom dice on the play we care about. The lookback values
+    # mirror the static-tableau logic in __main__.
     from . import dice as dice_mod
     DICE_LINGER_FRAMES = 6
+    dice_lookback = {
+        "casualty": 8, "touchdown": 8, "interception": 4,
+        "self_kill": 4, "clutch_fail": 0,
+        "double_skull": 0, "triple_skull": 0,
+    }.get(play.kind, 0)
+    dice_start = max(start, play.command_nr - dice_lookback)
     rolls_by_cmd: dict[int, list] = {}
     for c in cmds:
         cn = int(c.get("commandNr", 0) or 0)
-        if cn < start or cn > end:
+        if cn < dice_start or cn > play.command_nr:
             continue
         groups = dice_mod.extract_for_command(replay, cn, lookback=0)
         if groups:
