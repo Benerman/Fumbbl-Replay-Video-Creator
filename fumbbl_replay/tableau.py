@@ -295,8 +295,12 @@ def _draw_players(
         is_dead = base_state in (_STATE_KO, _STATE_BH, _STATE_SI, _STATE_RIP)
 
         if pid in involved:
+            # Translucent dim-yellow halo behind the sprite. Was a
+            # fully-opaque bright disc — too loud, drew the eye away
+            # from the dice/action. ~45% alpha + slightly muted yellow
+            # still flags the involved player without screaming.
             ring_r = r + (5 if sprite_pair else 4)
-            draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], fill=HIGHLIGHT)
+            _faint_disc(img, cx, cy, ring_r, (220, 180, 30), alpha=115)
 
         # The FFB sprite columns are already team-tinted (home cols 0/1,
         # away cols 2/3) so we trust the sprite to convey team identity.
