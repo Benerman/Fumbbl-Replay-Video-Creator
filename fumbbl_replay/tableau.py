@@ -65,10 +65,19 @@ WIDE_TINT = (50, 100, 60)
 # icon sheet, away sprites the blue-tinted columns 2/3. Match the
 # label/UI colours to that so the team name in the endzone and the
 # dugout strip reads consistently with the sprite the user actually
-# sees on the pitch.
-HOME_COLOR = (200, 70, 60)    # red — matches FFB home sprite tint
-AWAY_COLOR = (60, 110, 200)   # blue — matches FFB away sprite tint
-HIGHLIGHT = (255, 215, 0)
+# sees on the pitch. Both bumped toward fully saturated so they pop
+# on the dark caption strip (was a muted (200, 70, 60) / (60, 110, 200)).
+HOME_COLOR = (235, 60, 50)    # bright saturated red — matches FFB home tint
+AWAY_COLOR = (45, 130, 240)   # bright saturated blue — matches FFB away tint
+# HIGHLIGHT colours title-slide accents (MATCH HIGHLIGHTS, VS, score
+# banner) and the crosshair-fallback drawing. Off-white reads as a
+# clean broadcast accent without competing with the saturated team
+# colours, where the previous gold did.
+HIGHLIGHT = (245, 245, 240)
+# Subtle yellow halo behind the involved player. Stays distinct
+# from HIGHLIGHT (which is reserved for title-card accents) so the
+# play-action and slide hierarchies don't blur together.
+INVOLVED_HALO = (220, 180, 30)
 BALL_COLOR = (240, 240, 240)
 TEXT = (240, 240, 230)
 DIM_TEXT = (180, 180, 170)
@@ -300,7 +309,7 @@ def _draw_players(
             # from the dice/action. ~45% alpha + slightly muted yellow
             # still flags the involved player without screaming.
             ring_r = r + (5 if sprite_pair else 4)
-            _faint_disc(img, cx, cy, ring_r, (220, 180, 30), alpha=115)
+            _faint_disc(img, cx, cy, ring_r, INVOLVED_HALO, alpha=115)
 
         # The FFB sprite columns are already team-tinted (home cols 0/1,
         # away cols 2/3) so we trust the sprite to convey team identity.
