@@ -26,8 +26,10 @@ from typing import Iterable
 log = logging.getLogger(__name__)
 
 # Mix offsets / volumes (ms / linear gain).
-# Voice is the primary; SFX sit underneath as a backdrop. Volumes
-# below are tuned to make the commentary clearly the foreground.
+# Voice is the primary; SFX sit underneath as a backdrop. SFX gets
+# additionally side-chain compressed by the voice signal so it
+# automatically ducks under the commentator and pops back up between
+# phrases — see DUCK_* params below.
 SFX_THUD_DELAY_MS = 0
 SFX_CROWD_DELAY_MS = 500
 # Give the SFX a proper beat to land before the commentary starts.
@@ -35,10 +37,21 @@ TTS_PRIMARY_DELAY_MS = 1800
 # Gap between play-by-play and colour-commentator reaction. Longer
 # pause so each phrase gets room to breathe.
 TTS_BANTER_GAP_MS = 750
-# SFX volumes pulled WAY down so they don't drown the voice.
-SFX_THUD_VOLUME = 0.35
-SFX_CROWD_VOLUME = 0.22
+# Baseline SFX gains when voice is silent. Bumped up slightly vs the
+# old fixed mix because the duck will pull them down during speech.
+SFX_THUD_VOLUME = 0.50
+SFX_CROWD_VOLUME = 0.35
 TTS_VOLUME = 1.0
+# sidechaincompress params (SFX is compressed when the voice signal
+# exceeds threshold). 0.05 lin ≈ -26 dB — catches all voiced speech
+# but ignores low-level digital silence. ratio 6:1 = ~10 dB ducking
+# at typical voice peaks. release=300ms keeps the bed natural-sounding
+# between syllables; attack=20ms responds fast enough to not clip the
+# leading consonant.
+DUCK_THRESHOLD = 0.05
+DUCK_RATIO = 6
+DUCK_ATTACK_MS = 20
+DUCK_RELEASE_MS = 300
 # Tail pad after the last input ends so the crowd doesn't clip
 # mid-cheer in some encoders.
 TAIL_PAD_MS = 600
@@ -86,38 +99,78 @@ def mix_play_audio(
     if not shutil.which("ffmpeg"):
         log.warning("ffmpeg not found on PATH; cannot mix audio")
         return None
-    inputs: list[tuple[Path, float, int]] = []   # (path, volume, delay_ms)
+
+    # Split inputs into SFX bed and voice lines so we can side-chain
+    # duck the bed when the voice is speaking.
+    sfx_inputs: list[tuple[Path, float, int]] = []
+    voice_inputs: list[tuple[Path, float, int]] = []
     sfx_list = [p for p in sfx_paths if p and p.exists()]
     sfx_thud_delay = impact_offset_ms + SFX_THUD_DELAY_MS
     sfx_crowd_delay = impact_offset_ms + SFX_CROWD_DELAY_MS
     tts_primary_delay = impact_offset_ms + TTS_PRIMARY_DELAY_MS
     if sfx_list:
-        inputs.append((sfx_list[0], SFX_THUD_VOLUME, sfx_thud_delay))
+        sfx_inputs.append((sfx_list[0], SFX_THUD_VOLUME, sfx_thud_delay))
     if len(sfx_list) > 1:
-        inputs.append((sfx_list[1], SFX_CROWD_VOLUME, sfx_crowd_delay))
+        sfx_inputs.append((sfx_list[1], SFX_CROWD_VOLUME, sfx_crowd_delay))
     if tts_path and tts_path.exists():
-        inputs.append((tts_path, TTS_VOLUME, tts_primary_delay))
+        voice_inputs.append((tts_path, TTS_VOLUME, tts_primary_delay))
     if tts_banter_path and tts_banter_path.exists():
         primary_dur = _audio_duration_ms(tts_path) if tts_path else 0
         banter_delay = tts_primary_delay + primary_dur + TTS_BANTER_GAP_MS
-        inputs.append((tts_banter_path, TTS_VOLUME, banter_delay))
-    if not inputs:
+        voice_inputs.append((tts_banter_path, TTS_VOLUME, banter_delay))
+    if not sfx_inputs and not voice_inputs:
         log.warning("no inputs to mix for %s", out_path.name)
         return None
 
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
-    for path, _, _ in inputs:
+    for path, _, _ in sfx_inputs + voice_inputs:
         cmd += ["-i", str(path)]
 
-    # Build filter graph: each input gets adelay + volume; amix combines.
+    # Build filter graph in three stages:
+    #   1. each input -> adelay + volume, labelled [sfxN] / [vN]
+    #   2. amix per side -> [sfx_mix] / [voice_mix]
+    #   3. duck [sfx_mix] by [voice_mix] via sidechaincompress, then
+    #      amix the ducked SFX back with the voice
     filt_parts: list[str] = []
-    for idx, (_, vol, delay) in enumerate(inputs):
-        # adelay needs per-channel values; "all=1" applies to all channels.
-        filt_parts.append(f"[{idx}:a]adelay={delay}:all=1,volume={vol}[a{idx}]")
-    mix_inputs = "".join(f"[a{idx}]" for idx in range(len(inputs)))
-    filt_parts.append(
-        f"{mix_inputs}amix=inputs={len(inputs)}:duration=longest:normalize=0[mix]"
-    )
+    n_sfx = len(sfx_inputs)
+    n_voice = len(voice_inputs)
+    for i, (_, vol, delay) in enumerate(sfx_inputs):
+        filt_parts.append(f"[{i}:a]adelay={delay}:all=1,volume={vol}[sfx{i}]")
+    for j, (_, vol, delay) in enumerate(voice_inputs):
+        filt_parts.append(f"[{n_sfx + j}:a]adelay={delay}:all=1,volume={vol}[v{j}]")
+    if n_sfx > 1:
+        filt_parts.append(
+            "".join(f"[sfx{i}]" for i in range(n_sfx))
+            + f"amix=inputs={n_sfx}:duration=longest:normalize=0[sfx_mix]"
+        )
+    elif n_sfx == 1:
+        filt_parts.append("[sfx0]anull[sfx_mix]")
+    if n_voice > 1:
+        filt_parts.append(
+            "".join(f"[v{j}]" for j in range(n_voice))
+            + f"amix=inputs={n_voice}:duration=longest:normalize=0[voice_mix]"
+        )
+    elif n_voice == 1:
+        filt_parts.append("[v0]anull[voice_mix]")
+
+    if n_sfx and n_voice:
+        # sidechaincompress needs two physical input streams (it doesn't
+        # take a single label twice). asplit gives us a duplicate of the
+        # voice signal: one copy keys the duck, the other rejoins the mix.
+        filt_parts.append("[voice_mix]asplit=2[voice_a][voice_b]")
+        filt_parts.append(
+            f"[sfx_mix][voice_b]sidechaincompress="
+            f"threshold={DUCK_THRESHOLD}:ratio={DUCK_RATIO}:"
+            f"attack={DUCK_ATTACK_MS}:release={DUCK_RELEASE_MS}[sfx_ducked]"
+        )
+        filt_parts.append(
+            "[sfx_ducked][voice_a]amix=inputs=2:duration=longest:normalize=0[mix]"
+        )
+    elif n_sfx:
+        filt_parts.append("[sfx_mix]anull[mix]")
+    else:
+        filt_parts.append("[voice_mix]anull[mix]")
+
     # Tail pad: at minimum a small breath; bump to `target_duration_ms`
     # if the caller wants the audio to match the gif length so the
     # video can play the gif to completion without looping.
