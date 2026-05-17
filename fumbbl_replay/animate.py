@@ -141,7 +141,14 @@ def render_play_gif(
     # For casualties the "actor" is the inflicter (the one rolling
     # dice against the victim). For everything else it's play.player_id.
     from . import dice as dice_mod
-    DICE_LINGER_FRAMES = 6
+    # DICE_LINGER_FRAMES controls how many cmds *after* the reveal
+    # cmd still show the dice. Used to be 6 — that left the block
+    # dice visible long after the player went prone, making it look
+    # like the dice were rolled on a downed player. With the new
+    # reveal-uses-pre-state logic the dice are already prominent on
+    # the standing-player frame, so we only need a brief tail on
+    # the post-reveal cmd to ease the transition.
+    DICE_LINGER_FRAMES = 1
     WIDE_DICE_LOOKBACK = 30
     actor_pid = play.inflicter_id if play.kind == "casualty" else play.player_id
     # Pre-walk to figure out per-cmd whether the crosshair should be
@@ -220,7 +227,7 @@ def render_play_gif(
     # beat so the viewer can read the block / armor / injury rolls.
     # Combined with the 2x movement speed-up, this gives the action
     # moment good emphasis against the fast travel before and after.
-    REVEAL_DWELL_FRAMES = 8   # extra frames per newly revealed dice group
+    REVEAL_DWELL_FRAMES = 12  # extra frames per newly revealed dice group (2.6s at 200ms/frame)
 
     frames: list[Image.Image] = []
     durations_per_frame: list[int] = []
@@ -272,6 +279,16 @@ def render_play_gif(
     for i, cn in enumerate(interesting_cmds):
         is_last = i == len(interesting_cmds) - 1
         state = reconstruct_at(replay, cn, stop_at=last_stop if is_last else None)
+        # PRE-state: the field as it was just BEFORE this cmd was
+        # applied. We use this for dice-reveal hold frames so the
+        # dice anchor to the player BEFORE FFB swept them off (the
+        # injury report and the fieldModelRemovePlayer often fire
+        # in the same cmd; without this, the dice render mid-air
+        # over a now-empty tile).
+        if cn > 1:
+            pre_state = reconstruct_at(replay, cn - 1)
+        else:
+            pre_state = state
 
         # Collect any new dice groups that fired since the last rendered
         # cmd. We reveal them one by one so each gets its own dwell.
@@ -285,11 +302,15 @@ def render_play_gif(
 
         blitz_active_now = blitz_active_at_cmd.get(cn, False)
 
-        # Sequential reveal: one new group per pause, holding the field state.
+        # Sequential reveal: one new group per pause. The hold frames
+        # use the PRE-cmd state so the player is still on the pitch
+        # (or still standing) at the moment the dice land — the
+        # post-state-change collapse to prone / dugout happens on
+        # the very next frame.
         for group in new_groups:
             active_dice.append((DICE_LINGER_FRAMES, [group]))
             visible = [g for _, groups in active_dice for g in groups]
-            reveal_frame, reveal_png = _render(state, visible, frame_idx, blitz_active=blitz_active_now); frame_idx += 1
+            reveal_frame, reveal_png = _render(pre_state, visible, frame_idx, blitz_active=blitz_active_now); frame_idx += 1
             for _ in range(REVEAL_DWELL_FRAMES + 1):
                 frames.append(reveal_frame)
                 durations_per_frame.append(frame_ms)
@@ -297,7 +318,8 @@ def render_play_gif(
                 movement_only.append(False)
             last_dice_frame_idx = len(frames) - 1
 
-        # Normal frame for the field state (no new dice).
+        # Normal frame: the actual post-cmd state. State change /
+        # removal land here, AFTER the dice hold above.
         visible = [g for _, groups in active_dice for g in groups]
         frame_img, frame_png = _render(state, visible, frame_idx, blitz_active=blitz_active_now); frame_idx += 1
         frames.append(frame_img)
