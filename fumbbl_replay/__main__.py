@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     # video output so a one-flag invocation works.
     if args.video:
         if not args.gifs:
-            args.gifs = args.video.parent / "vertical" / "gifs"
+            args.gifs = args.video.parent / args.orientation / "gifs"
         if not args.mix:
             args.mix = args.video.parent / "mixed"
 
@@ -322,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import animate
         # When --video is set we also dump a full-res PNG frame sequence
         # per play so the video encoder skips the GIF palette pass.
-        frames_root = (args.video.parent / "vertical" / "frames") if args.video else None
+        frames_root = (args.video.parent / args.orientation / "frames") if args.video else None
         n = 0
         for i, p in enumerate(analysis.pivotal, 1):
             if p.command_nr is None:
@@ -385,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
                 for d in frames_dirs.values():
                     if d.exists():
                         _shutil.rmtree(d, ignore_errors=True)
-                parent = (args.video.parent / "vertical" / "frames")
+                parent = (args.video.parent / args.orientation / "frames")
                 if parent.exists() and not any(parent.iterdir()):
                     parent.rmdir()
             except Exception as e:

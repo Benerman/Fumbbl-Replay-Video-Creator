@@ -173,7 +173,9 @@ def compose_highlight_reel(
         log.warning("ffmpeg/ffprobe not on PATH; cannot compose video")
         return None
     if work_dir is None:
-        work_dir = out_path.parent / "_clips"
+        # Stem-scoped so a vertical + horizontal pair of runs into the
+        # same output folder don't trample each other's intermediates.
+        work_dir = out_path.parent / f"_clips_{out_path.stem}"
     work_dir.mkdir(parents=True, exist_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     frames_dirs_by_play = frames_dirs_by_play or {}
