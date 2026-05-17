@@ -127,25 +127,62 @@ def render_play_gif(
     if len(interesting_cmds) > max_frames:
         interesting_cmds = interesting_cmds[-max_frames:]
 
-    # Pre-extract dice for the play. We restrict to a NARROW per-kind
-    # window around play.command_nr - the broader movement window above
-    # is for drawing frames, but if we extract dice from the whole 60
-    # commands we pick up *other* players' block rolls (a teammate
-    # blocked 30 cmds before this one's snake-eyes) and they linger as
-    # phantom dice on the play we care about. The lookback values
-    # mirror the static-tableau logic in __main__.
+    # Pre-extract dice for the play. We scope dice to the cmds where
+    # the play's actor was on the clock — that way a blitz block fired
+    # 18 cmds before the TD (well outside a fixed-window lookback)
+    # still gets captured for its own scorer, while a teammate's
+    # earlier block roll in the same drive gets filtered out.
+    #
+    # For casualties the "actor" is the inflicter (the one rolling
+    # dice against the victim). For everything else it's play.player_id.
     from . import dice as dice_mod
     DICE_LINGER_FRAMES = 6
-    dice_lookback = {
-        "casualty": 8, "touchdown": 8, "interception": 4,
-        "self_kill": 4, "clutch_fail": 0,
-        "double_skull": 0, "triple_skull": 0,
-    }.get(play.kind, 0)
-    dice_start = max(start, play.command_nr - dice_lookback)
+    WIDE_DICE_LOOKBACK = 30
+    actor_pid = play.inflicter_id if play.kind == "casualty" else play.player_id
+    # Pre-walk to compute (a) which player was acting at each cmd, and
+    # (b) whether their current action is a Blitz. We use (b) below to
+    # restrict the crosshair badge to the cmds where the blitz is
+    # actually being taken, not the whole gif window.
+    acting_at_cmd: dict[int, str | None] = {}
+    blitz_active_at_cmd: dict[int, bool] = {}
+    acting_now: str | None = None
+    action_now: str | None = None
+    for c in cmds:
+        cn = int(c.get("commandNr", 0) or 0)
+        if cn > end:
+            break
+        if c.get("netCommandId") != "serverModelSync":
+            continue
+        for m in c.get("modelChangeList", {}).get("modelChangeArray", []) or []:
+            mid = m.get("modelChangeId")
+            v = m.get("modelChangeValue")
+            if mid == "actingPlayerSetPlayerId":
+                new_pid = str(v) if v else None
+                if new_pid and new_pid != acting_now:
+                    action_now = None   # reset on player change
+                acting_now = new_pid
+            elif mid == "actingPlayerSetPlayerAction" and v:
+                action_now = str(v)
+        acting_at_cmd[cn] = acting_now
+        # Only flag the cmd as "blitz-active" when THIS play's actor
+        # (the blitzer / inflicter) is the one on the clock AND their
+        # current action is a Blitz. Otherwise an earlier unrelated
+        # blitz by a teammate would also light up the crosshair.
+        blitz_active_at_cmd[cn] = (
+            acting_now is not None
+            and actor_pid is not None
+            and acting_now == actor_pid
+            and (action_now or "").lower() in ("blitz", "blitzmove")
+        )
+    dice_start = max(start, play.command_nr - WIDE_DICE_LOOKBACK)
     rolls_by_cmd: dict[int, list] = {}
     for c in cmds:
         cn = int(c.get("commandNr", 0) or 0)
         if cn < dice_start or cn > play.command_nr:
+            continue
+        # Only include dice rolled while the play's own actor was on
+        # the clock — keeps teammates' earlier dice from leaking in.
+        if actor_pid and acting_at_cmd.get(cn) != actor_pid:
             continue
         groups = dice_mod.extract_for_command(replay, cn, lookback=0)
         if groups:
@@ -170,7 +207,7 @@ def render_play_gif(
     if frames_dir is not None:
         frames_dir.mkdir(parents=True, exist_ok=True)
 
-    def _render(state, dice_to_show, idx):
+    def _render(state, dice_to_show, idx, blitz_active=False):
         """Render one tableau. Returns (palette_image_for_gif, full_res_png_path_or_None)."""
         img_path = out_path.with_suffix(f".frame{idx:04d}.png")
         render_tableau(
@@ -182,6 +219,7 @@ def render_play_gif(
             dice=dice_to_show or None,
             pitch_background=pitch_background,
             weather=weather,
+            blitz_active=blitz_active,
         )
         im = Image.open(img_path)
         if gif_scale != 1.0:
@@ -218,11 +256,13 @@ def render_play_gif(
         # Age previously-active dice.
         active_dice = [(n - 1, g) for n, g in active_dice if n - 1 > 0]
 
+        blitz_active_now = blitz_active_at_cmd.get(cn, False)
+
         # Sequential reveal: one new group per pause, holding the field state.
         for group in new_groups:
             active_dice.append((DICE_LINGER_FRAMES, [group]))
             visible = [g for _, groups in active_dice for g in groups]
-            reveal_frame, reveal_png = _render(state, visible, frame_idx); frame_idx += 1
+            reveal_frame, reveal_png = _render(state, visible, frame_idx, blitz_active=blitz_active_now); frame_idx += 1
             for _ in range(REVEAL_DWELL_FRAMES + 1):
                 frames.append(reveal_frame)
                 durations_per_frame.append(frame_ms)
@@ -232,7 +272,7 @@ def render_play_gif(
 
         # Normal frame for the field state (no new dice).
         visible = [g for _, groups in active_dice for g in groups]
-        frame_img, frame_png = _render(state, visible, frame_idx); frame_idx += 1
+        frame_img, frame_png = _render(state, visible, frame_idx, blitz_active=blitz_active_now); frame_idx += 1
         frames.append(frame_img)
         durations_per_frame.append(frame_ms)
         frame_pngs.append(frame_png)

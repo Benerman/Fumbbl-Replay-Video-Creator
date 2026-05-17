@@ -138,6 +138,7 @@ def render_tableau(
     dice: list | None = None,
     pitch_background: Image.Image | None = None,
     weather: str | None = None,
+    blitz_active: bool = True,        # show the crosshair on the blitz target?
 ) -> Path:
     """Render one pivotal-play tableau.
 
@@ -181,8 +182,8 @@ def render_tableau(
     # when we actually know who that was — for plays where the action
     # was Blitz but no block landed (e.g. a self-kill on the GFI to
     # contact), the chip would have nowhere honest to anchor.
-    if play.was_blitz and play.blitz_target_id:
-        _draw_blitz_badge(img, draw, lay, state, play.blitz_target_id, _font(22))
+    if play.was_blitz and play.blitz_target_id and blitz_active:
+        _draw_blitz_badge(img, draw, lay, state, play.blitz_target_id)
     # Layer 7: dice rolls that produced this play, positioned over the actor.
     if dice:
         _draw_dice(img, lay, state, dice, targets, tiny)
@@ -292,10 +293,10 @@ def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
 
 
 def _draw_blitz_badge(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
-                       state: FieldState, target_pid: str, font) -> None:
-    """Stamp a small bright BLITZ chip next to the OPPONENT the blitzer
-    marked against (the block defender) so the viewer knows which player
-    was targeted by the blitz move."""
+                       state: FieldState, target_pid: str) -> None:
+    """Overlay a bright crosshair on the OPPONENT the blitzer marked
+    against. Matches the visual language of an aiming reticle so the
+    viewer knows at a glance which player got chosen for the blitz."""
     anchor_pid = target_pid
     if not anchor_pid:
         return
@@ -306,16 +307,25 @@ def _draw_blitz_badge(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
     if not (0 <= ax < PITCH_WIDTH and 0 <= ay < PITCH_HEIGHT):
         return
     cx, cy = lay.bb_to_screen(ax, ay)
-    label = "BLITZ"
-    tw, th = _text_size(draw, label, font)
-    pad_x, pad_y = 4, 2
-    chip_w, chip_h = tw + 2 * pad_x, th + 2 * pad_y
-    # Slot the chip just below the player token (dice strip is above).
-    x = cx - chip_w // 2
-    y = cy + TILE // 2 + 2
-    chip = Image.new("RGBA", (chip_w, chip_h), HIGHLIGHT + (245,))
-    img.alpha_composite(chip, (x, y))
-    draw.text((x + pad_x, y + pad_y - 1), label, fill=(24, 24, 24), font=font)
+    # Crosshair: outer ring, four tick marks with a gap before the centre,
+    # inner dot. Sized to surround a player tile.
+    r_outer = TILE // 2 + 4
+    r_inner = TILE // 2 - 6
+    width = max(2, TILE // 14)
+    color = HIGHLIGHT
+    # Outer ring
+    draw.ellipse([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer],
+                 outline=color, width=width)
+    # Tick marks (four arms) — leave a small gap before the centre dot
+    tick_outer = r_outer + 6
+    tick_gap = r_inner + 2
+    draw.line([cx - tick_outer, cy, cx - tick_gap, cy], fill=color, width=width)
+    draw.line([cx + tick_gap, cy, cx + tick_outer, cy], fill=color, width=width)
+    draw.line([cx, cy - tick_outer, cx, cy - tick_gap], fill=color, width=width)
+    draw.line([cx, cy + tick_gap, cx, cy + tick_outer], fill=color, width=width)
+    # Centre dot
+    dot = max(2, TILE // 18)
+    draw.ellipse([cx - dot, cy - dot, cx + dot, cy + dot], fill=color)
 
 
 def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,

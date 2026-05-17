@@ -71,11 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tts-backend", choices=("kokoro", "say", "pyttsx3", "openai"), default=None,
                         help="TTS backend (default: kokoro - local neural TTS; env: FUMBBL_TTS_BACKEND)")
     parser.add_argument("--tts-voice", default=None,
-                        help="Play-by-play voice for the chosen TTS backend (default per backend; env: FUMBBL_TTS_VOICE)")
-    parser.add_argument("--tts-voice-b", default=None,
-                        help="Colour-commentator voice for the banter reaction (kokoro backend; default: auto-paired)")
+                        help="Voice for the chosen TTS backend (default per backend; env: FUMBBL_TTS_VOICE)")
     parser.add_argument("--tts-meme", action="store_true",
-                        help="Use af_nicole (ASMR-style) as the play-by-play voice — comedy mode")
+                        help="Use af_nicole (ASMR-style) as the voice — comedy mode")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -167,21 +165,18 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("commentary generation failed: %s", e)
 
     tts_paths: dict[int, Path] = {}
-    banter_paths: dict[int, Path] = {}
     if want_tts_dir:
-        from . import tts, commentary as commentary_mod
+        from . import tts
 
-        # Auto-pair voices when neither is given and we're on Kokoro.
-        # Seed by match id so a given match gets a stable booth across
-        # reruns. --tts-meme swaps voice A for the ASMR-style nicole.
-        voice_a, voice_b = args.tts_voice, args.tts_voice_b
-        if (args.tts_backend or tts.DEFAULT_BACKEND) == "kokoro" and not voice_a and not voice_b:
+        # Pick the play-by-play voice. Seed by match id so a given
+        # match gets a stable booth across reruns. --tts-meme swaps in
+        # the ASMR-style nicole.
+        voice_a = args.tts_voice
+        if (args.tts_backend or tts.DEFAULT_BACKEND) == "kokoro" and not voice_a:
             seed = ref.match_id or ref.replay_id or 0
-            voice_a, voice_b = tts.pick_voice_pair(seed, meme=args.tts_meme)
-            log.info("auto-paired voices for match %s: A=%s B=%s",
-                     seed, voice_a, voice_b)
+            voice_a, _ = tts.pick_voice_pair(seed, meme=args.tts_meme)
+            log.info("picked voice for match %s: %s", seed, voice_a)
 
-        # Primary play-by-play line per pivotal play.
         try:
             tts_paths = tts.generate_audio(
                 commentary_lines, want_tts_dir,
@@ -192,19 +187,6 @@ def main(argv: list[str] | None = None) -> int:
             log.info("rendered %d audio clips to %s", len(tts_paths), want_tts_dir)
         except Exception as e:
             log.warning("TTS generation failed: %s", e)
-        # Colour-commentator banter line per pivotal play, in a second voice.
-        try:
-            banter_lines = commentary_mod.generate_banter(analysis)
-            banter_paths = tts.generate_audio(
-                banter_lines, want_tts_dir,
-                pivotal_kinds=kinds,
-                backend=args.tts_backend,
-                voice=voice_b,
-                filename_suffix="_b",
-            )
-            log.info("rendered %d banter clips", len(banter_paths))
-        except Exception as e:
-            log.warning("banter TTS generation failed: %s", e)
 
     sfx_paths: dict[int, list[Path]] = {}
     if args.sounds or args.mix:
@@ -356,7 +338,6 @@ def main(argv: list[str] | None = None) -> int:
         try:
             mix_paths = mix_mod.mix_match_audio(
                 tts_paths, sfx_paths, kinds, args.mix,
-                banter_by_play=banter_paths,
                 impact_offsets_ms=impact_offsets_ms,
                 target_durations_ms=target_durations_ms,
             )
