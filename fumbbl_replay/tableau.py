@@ -174,7 +174,7 @@ def render_tableau(
     # Layer 4: header bar above the pitch.
     draw.text((lay.ox, 28), _header_text(play, weather=weather), fill=TEXT, font=font)
     # Layer 5: ball.
-    _draw_ball(draw, lay, state)
+    _draw_ball(img, draw, lay, state)
     # Layer 6: players + their state markers + the highlight ring.
     _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
     # Layer 6b: BLITZ badge on the OPPONENT that was marked against
@@ -198,15 +198,55 @@ def render_tableau(
     return out_path
 
 
-def _draw_ball(draw: ImageDraw.ImageDraw, lay: Layout, state: FieldState) -> None:
+_HOLDBALL_ICON_CACHE: Image.Image | None = None
+
+def _draw_ball(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
+               state: FieldState) -> None:
+    """Render the ball. If a player stands on the ball's tile it's
+    being held — show the FFB holdball badge on top of their sprite.
+    Otherwise it's loose (bouncing / passed / kicked) — draw a free
+    ball icon at the coordinate so the viewer can track it across
+    bounces and pass arcs."""
     if not state.ball:
         return
     bx, by = state.ball
     if not (0 <= bx < PITCH_WIDTH and 0 <= by < PITCH_HEIGHT):
         return
     cx, cy = lay.bb_to_screen(bx, by)
-    r = TILE // 4
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=BALL_COLOR)
+    holder_pid = None
+    for pid, (px, py) in state.players.items():
+        if (px, py) == (bx, by):
+            holder_pid = pid
+            break
+    if holder_pid:
+        global _HOLDBALL_ICON_CACHE
+        if _HOLDBALL_ICON_CACHE is None:
+            from . import sprites
+            _HOLDBALL_ICON_CACHE = sprites.fetch_ffb_decoration("holdball")
+        if _HOLDBALL_ICON_CACHE is not None:
+            # Place top-right of the player tile so it doesn't hide the sprite.
+            icon = _HOLDBALL_ICON_CACHE
+            desired = max(16, TILE // 2 + 4)
+            if icon.size != (desired, desired):
+                icon = icon.resize((desired, desired), resample=Image.NEAREST)
+            off_x = TILE // 2 - desired + 6
+            off_y = -TILE // 2 - 2
+            img.alpha_composite(icon, (cx + off_x, cy + off_y))
+            return
+        # Fallback: a small bright ball badge on the player's tile.
+        r = TILE // 4
+        off_x, off_y = TILE // 3, -TILE // 3
+        draw.ellipse([cx + off_x - r, cy + off_y - r,
+                       cx + off_x + r, cy + off_y + r],
+                      fill=(140, 90, 40),
+                      outline=(255, 240, 180), width=2)
+        return
+    # Loose ball: bouncing or in flight. Bigger + ringed so the viewer
+    # can pick it up against the pitch.
+    r = TILE // 3
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                  fill=(245, 230, 180),
+                  outline=(120, 60, 20), width=max(2, TILE // 20))
 
 
 def _draw_players(
@@ -292,11 +332,13 @@ def _faint_disc(img: Image.Image, cx: int, cy: int, r: int,
     img.alpha_composite(overlay, (cx - r, cy - r))
 
 
+_TARGET_ICON_CACHE: Image.Image | None = None
+
 def _draw_blitz_badge(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
                        state: FieldState, target_pid: str) -> None:
-    """Overlay a bright crosshair on the OPPONENT the blitzer marked
-    against. Matches the visual language of an aiming reticle so the
-    viewer knows at a glance which player got chosen for the blitz."""
+    """Overlay the FFB target/crosshair icon on the OPPONENT the
+    blitzer marked against — same visual the FFB Java client uses
+    when the player is selecting a blitz target."""
     anchor_pid = target_pid
     if not anchor_pid:
         return
@@ -307,25 +349,28 @@ def _draw_blitz_badge(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
     if not (0 <= ax < PITCH_WIDTH and 0 <= ay < PITCH_HEIGHT):
         return
     cx, cy = lay.bb_to_screen(ax, ay)
-    # Crosshair: outer ring, four tick marks with a gap before the centre,
-    # inner dot. Sized to surround a player tile.
+    global _TARGET_ICON_CACHE
+    if _TARGET_ICON_CACHE is None:
+        from . import sprites
+        _TARGET_ICON_CACHE = sprites.fetch_ffb_decoration("target")
+    # Scale the 15x15 source up to wrap the player tile cleanly.
+    desired = TILE + 12
+    icon = _TARGET_ICON_CACHE
+    if icon is not None:
+        if icon.size != (desired, desired):
+            icon = icon.resize((desired, desired), resample=Image.NEAREST)
+        img.alpha_composite(icon, (cx - desired // 2, cy - desired // 2))
+        return
+    # Fallback: drawn crosshair if the asset couldn't be fetched.
     r_outer = TILE // 2 + 4
-    r_inner = TILE // 2 - 6
     width = max(2, TILE // 14)
     color = HIGHLIGHT
-    # Outer ring
     draw.ellipse([cx - r_outer, cy - r_outer, cx + r_outer, cy + r_outer],
                  outline=color, width=width)
-    # Tick marks (four arms) — leave a small gap before the centre dot
-    tick_outer = r_outer + 6
-    tick_gap = r_inner + 2
-    draw.line([cx - tick_outer, cy, cx - tick_gap, cy], fill=color, width=width)
-    draw.line([cx + tick_gap, cy, cx + tick_outer, cy], fill=color, width=width)
-    draw.line([cx, cy - tick_outer, cx, cy - tick_gap], fill=color, width=width)
-    draw.line([cx, cy + tick_gap, cx, cy + tick_outer], fill=color, width=width)
-    # Centre dot
-    dot = max(2, TILE // 18)
-    draw.ellipse([cx - dot, cy - dot, cx + dot, cy + dot], fill=color)
+    draw.line([cx - r_outer - 6, cy, cx - r_outer + 4, cy], fill=color, width=width)
+    draw.line([cx + r_outer - 4, cy, cx + r_outer + 6, cy], fill=color, width=width)
+    draw.line([cx, cy - r_outer - 6, cx, cy - r_outer + 4], fill=color, width=width)
+    draw.line([cx, cy + r_outer - 4, cx, cy + r_outer + 6], fill=color, width=width)
 
 
 def _draw_dice(img: Image.Image, lay: Layout, state: FieldState,

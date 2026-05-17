@@ -139,14 +139,16 @@ def render_play_gif(
     DICE_LINGER_FRAMES = 6
     WIDE_DICE_LOOKBACK = 30
     actor_pid = play.inflicter_id if play.kind == "casualty" else play.player_id
-    # Pre-walk to compute (a) which player was acting at each cmd, and
-    # (b) whether their current action is a Blitz. We use (b) below to
-    # restrict the crosshair badge to the cmds where the blitz is
-    # actually being taken, not the whole gif window.
+    # Pre-walk to figure out per-cmd whether the crosshair should be
+    # showing on this play's actor's blitz target. Trigger is the
+    # selectBlitzTarget REPORT — that fires the moment the FFB Java
+    # client visually places the cursor on the chosen opponent. The
+    # badge stays visible until the actor's turn ends (i.e. until
+    # actingPlayerSetPlayerId clears them off the clock).
     acting_at_cmd: dict[int, str | None] = {}
     blitz_active_at_cmd: dict[int, bool] = {}
     acting_now: str | None = None
-    action_now: str | None = None
+    blitz_target_selected: bool = False
     for c in cmds:
         cn = int(c.get("commandNr", 0) or 0)
         if cn > end:
@@ -158,21 +160,28 @@ def render_play_gif(
             v = m.get("modelChangeValue")
             if mid == "actingPlayerSetPlayerId":
                 new_pid = str(v) if v else None
-                if new_pid and new_pid != acting_now:
-                    action_now = None   # reset on player change
+                # When the acting player actually changes we drop the
+                # crosshair — any prior selection belongs to a finished
+                # action. Same-pid refires (FFB emits these for sub-
+                # steps of one action) leave the state intact.
+                if new_pid != acting_now:
+                    blitz_target_selected = False
                 acting_now = new_pid
-            elif mid == "actingPlayerSetPlayerAction" and v:
-                action_now = str(v)
+        for r in (c.get("reportList") or {}).get("reports") or []:
+            if r.get("reportId") != "selectBlitzTarget":
+                continue
+            attacker = str(r.get("attackerId") or "")
+            defender = str(r.get("defenderId") or "")
+            if (actor_pid and attacker == actor_pid
+                    and play.blitz_target_id
+                    and defender == play.blitz_target_id):
+                blitz_target_selected = True
         acting_at_cmd[cn] = acting_now
-        # Only flag the cmd as "blitz-active" when THIS play's actor
-        # (the blitzer / inflicter) is the one on the clock AND their
-        # current action is a Blitz. Otherwise an earlier unrelated
-        # blitz by a teammate would also light up the crosshair.
         blitz_active_at_cmd[cn] = (
-            acting_now is not None
+            blitz_target_selected
+            and acting_now is not None
             and actor_pid is not None
             and acting_now == actor_pid
-            and (action_now or "").lower() in ("blitz", "blitzmove")
         )
     dice_start = max(start, play.command_nr - WIDE_DICE_LOOKBACK)
     rolls_by_cmd: dict[int, list] = {}

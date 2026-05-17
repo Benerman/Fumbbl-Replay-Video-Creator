@@ -79,6 +79,32 @@ def fetch_icon_sheet(image_id: int) -> Image.Image:
     return _fetch_image(image_id, "icons")
 
 
+def fetch_ffb_decoration(name: str) -> Image.Image | None:
+    """Fetch a small decoration icon from the FFB Java client's resources
+    (target/crosshair, holdball, etc.). Cached on disk.
+
+    Returns None if the asset can't be fetched.
+    """
+    cache_path = CACHE_DIR / "ffb_decorations" / f"{name}.png"
+    if not cache_path.exists():
+        url = ("https://raw.githubusercontent.com/christerk/ffb/master/"
+                f"ffb-resources/src/main/resources/icons/decorations/{name}.png")
+        try:
+            log.info("GET %s", url)
+            r = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+            r.raise_for_status()
+        except Exception as e:
+            log.warning("could not fetch FFB decoration %s: %s", name, e)
+            return None
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(r.content)
+    try:
+        return Image.open(cache_path).convert("RGBA")
+    except Exception as e:
+        log.warning("could not open FFB decoration %s: %s", name, e)
+        return None
+
+
 def fetch_team_logo(image_id: int | None) -> Image.Image | None:
     """Fetch a team logo image, cached on disk. Returns None for missing logos."""
     if not image_id:
