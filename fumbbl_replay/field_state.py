@@ -99,8 +99,13 @@ def reconstruct_at(
             if mid == "fieldModelSetPlayerCoordinate" and key and isinstance(v, list) and len(v) == 2:
                 state.players[str(key)] = (int(v[0]), int(v[1]))
             elif mid == "fieldModelRemovePlayer" and key:
+                # Drop the pitch coordinate so the player vanishes from
+                # on-pitch rendering, but KEEP their state bitmask —
+                # FFB has just set it to KO/BH/SI/RIP/BAN in the prior
+                # cmd, and the dugout-strip count needs to see it.
+                # Wiping player_states here is why the strip showed
+                # zeros all match.
                 state.players.pop(str(key), None)
-                state.player_states.pop(str(key), None)
             elif mid == "fieldModelSetPlayerState" and key and isinstance(v, int):
                 state.player_states[str(key)] = v
             elif mid == "fieldModelSetBallCoordinate":
