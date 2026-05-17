@@ -94,6 +94,39 @@ class Event:
 
 def extract_events(replay: dict[str, Any]) -> list[Event]:
     cmds: Iterable[dict[str, Any]] = replay.get("gameLog", {}).get("commandArray", []) or []
+
+    # Pre-pass: identify snake-eyes blockRolls that got re-rolled into
+    # success in the very next serverModelSync cmd. FFB splits the two
+    # rolls across cmds — initial [1,1] at cmd N, re-roll [x,y] at
+    # cmd N+1 — so in-cmd scanning misses the rescue. We collect the
+    # cmd numbers of bailed-out blockRolls and skip the double_skull /
+    # triple_skull event for those when we hit them in the main loop.
+    saved_by_reroll: set[int] = set()
+    cmd_list = list(cmds)
+    blockroll_cmds: list[tuple[int, list[int]]] = []   # [(cmd_nr, last_roll)]
+    for c in cmd_list:
+        if c.get("netCommandId") != "serverModelSync":
+            continue
+        cn = int(c.get("commandNr", 0) or 0)
+        rolls = [r.get("blockRoll") or []
+                 for r in (c.get("reportList") or {}).get("reports") or []
+                 if r.get("reportId") == "blockRoll"]
+        if rolls:
+            blockroll_cmds.append((cn, rolls[-1]))
+    for i, (cn, roll) in enumerate(blockroll_cmds):
+        ones = sum(1 for v in roll if v == 1)
+        if not (ones == len(roll) and len(roll) >= 2):
+            continue
+        # Snake-eyes here — look at the IMMEDIATELY NEXT blockRoll.
+        # If it's not also all-skulls, it's a re-roll that saved
+        # the play (Team Re-Roll / Pro / Loner / Brawler).
+        if i + 1 < len(blockroll_cmds):
+            next_cn, next_roll = blockroll_cmds[i + 1]
+            if next_cn - cn <= 2:   # adjacent / within a heartbeat
+                next_ones = sum(1 for v in next_roll if v == 1)
+                if not (next_ones == len(next_roll) and len(next_roll) >= 2):
+                    saved_by_reroll.add(cn)
+
     player_side = _player_side_map(replay)
     half = 0
     turn_home = 0
@@ -271,6 +304,13 @@ def extract_events(replay: dict[str, Any]) -> list[Event]:
                     current_blitz_target = d
                 continue
             if rid == "blockRoll":
+                # If this snake-eyes was re-rolled into success in the
+                # adjacent cmd (see saved_by_reroll pre-pass above),
+                # swallow the event. The actual casualty / push from
+                # the successful re-roll is still emitted via its own
+                # report stream.
+                if cn in saved_by_reroll:
+                    continue
                 roll = r.get("blockRoll") or []
                 defender_id = current_blitz_target
                 ones = sum(1 for v in roll if v == 1)
