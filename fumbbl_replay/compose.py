@@ -97,7 +97,8 @@ def _encode_play_clip(video_source: Path, audio: Path, out: Path,
         "-vf", vf,
         "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
         "-pix_fmt", VIDEO_PIX_FMT,
-        "-c:a", AUDIO_CODEC, "-b:a", AUDIO_BITRATE,
+        "-profile:v", "main", "-level:v", "4.0", "-bf", "0",
+        "-c:a", AUDIO_CODEC, "-b:a", "192k", "-ar", "44100", "-ac", "2",
         "-movflags", "+faststart",
         str(out),
     ]
@@ -110,45 +111,55 @@ def _encode_play_clip(video_source: Path, audio: Path, out: Path,
 
 
 def _concat_clips(clips: Sequence[Path], out_path: Path) -> bool:
-    """Concat the per-play MP4s into one.
+    """Concat the per-play MP4s into one final highlight reel.
 
-    Re-encodes the joined stream rather than `-c copy` because the
-    demuxer's stream-copy path leaves a slightly drifted average
-    frame rate (the clip-boundary timestamps don't quite land on
-    30-fps ticks). Some players — QuickTime / Safari / iOS / older
-    media frameworks — refuse to play such files. Forcing
-    constant-frame-rate output through `fps={FPS}` and re-encoding
-    h264 + aac produces a clean, broadly-playable result.
+    Uses the ffmpeg concat FILTER (not the demuxer) so all clips are
+    re-decoded into a single unified filter pipeline and emitted as
+    a single contiguous CFR stream. The demuxer's stream-copy path
+    left clip-boundary timestamps slightly drifted from 30-fps ticks,
+    which some players reject silently.
 
-    Also drops the bitstream to High@4.0 to match what most consumer
-    hardware decoders support without complaint.
+    Encode settings are tuned for maximum compatibility:
+      profile:v main   - widely supported by hardware decoders
+      level:v 4.0      - up to 1080p30 / our 960x1804 (1.73 Mpix)
+      bf 0             - no b-frames; some legacy players struggle
+      pix_fmt yuv420p  - standard 4:2:0
+      aac LC 192k      - LC profile, standard sample rate
+      faststart        - moov at front for streaming readiness
+      avoid_negative_ts make_zero - clean PTS rebase
+
+    Cost is one decode + one encode (~25 s for a 2-minute reel).
     """
     if not clips:
         return False
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        for c in clips:
-            # ffmpeg concat demuxer wants `file '/abs/path'` lines.
-            f.write(f"file '{c.resolve()}'\n")
-        listing = f.name
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "concat", "-safe", "0", "-i", listing,
-        "-vf", f"fps={FPS}",
-        "-fps_mode", "cfr",
+    cmd: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    for c in clips:
+        cmd += ["-i", str(c)]
+    # Build the filter expression: [0:v:0][0:a:0][1:v:0][1:a:0]...
+    # then concat n=N:v=1:a=1.
+    parts: list[str] = []
+    for i in range(len(clips)):
+        parts.append(f"[{i}:v:0][{i}:a:0]")
+    concat_expr = "".join(parts) + f"concat=n={len(clips)}:v=1:a=1[v][a]"
+    cmd += [
+        "-filter_complex", concat_expr,
+        "-map", "[v]", "-map", "[a]",
+        "-r", str(FPS),
         "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
-        "-pix_fmt", VIDEO_PIX_FMT, "-profile:v", "high", "-level:v", "4.0",
-        "-c:a", AUDIO_CODEC, "-b:a", AUDIO_BITRATE,
+        "-pix_fmt", VIDEO_PIX_FMT,
+        "-profile:v", "main", "-level:v", "4.0",
+        "-bf", "0",
+        "-c:a", AUDIO_CODEC, "-b:a", "192k", "-ar", "44100", "-ac", "2",
         "-movflags", "+faststart",
+        "-avoid_negative_ts", "make_zero",
         str(out_path),
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
         return True
     except subprocess.CalledProcessError as e:
-        log.warning("concat re-encode failed: %s", e.stderr or e)
+        log.warning("concat-filter re-encode failed: %s", e.stderr or e)
         return False
-    finally:
-        Path(listing).unlink(missing_ok=True)
 
 
 
