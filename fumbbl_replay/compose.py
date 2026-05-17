@@ -164,18 +164,31 @@ def _concat_clips(clips: Sequence[Path], out_path: Path) -> bool:
 
 
 def encode_still_clip(image_path: Path, audio: Path, out: Path,
-                       *, min_duration_ms: int = 0) -> bool:
+                       *, min_duration_ms: int = 0,
+                       lead_silence_ms: int = 400,
+                       tail_silence_ms: int = 1000) -> bool:
     """Encode a still PNG + audio into an mp4. Used for intro / outro
-    title cards. Stretches the image to the audio duration (or
-    min_duration_ms, whichever is longer)."""
+    title cards.
+
+    Pads the audio with `lead_silence_ms` of silence at the start
+    (lets the viewer register the slide before narration begins) and
+    `tail_silence_ms` at the end (so the voice doesn't bleed into
+    the next concat boundary). The clip's video length matches the
+    final audio length, then is clamped to `min_duration_ms` so
+    short narration still gets a readable on-screen beat."""
     audio_dur = _audio_duration_seconds(audio)
     if audio_dur <= 0:
         log.warning("no audio for still clip %s", image_path.name)
         return False
-    target_dur = max(audio_dur, min_duration_ms / 1000.0)
+    padded_audio_dur = audio_dur + (lead_silence_ms + tail_silence_ms) / 1000.0
+    target_dur = max(padded_audio_dur, min_duration_ms / 1000.0)
     vf = (
         f"loop=loop=-1:size=1,trim=duration={target_dur:.3f},"
         f"fps={FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p"
+    )
+    af = (
+        f"adelay={lead_silence_ms}:all=1,"
+        f"apad=pad_dur={tail_silence_ms / 1000.0}"
     )
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -184,6 +197,7 @@ def encode_still_clip(image_path: Path, audio: Path, out: Path,
         "-map", "0:v:0", "-map", "1:a:0",
         "-t", f"{target_dur:.3f}",
         "-vf", vf,
+        "-af", af,
         "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
         "-pix_fmt", VIDEO_PIX_FMT,
         "-profile:v", "main", "-level:v", "4.0", "-bf", "0",

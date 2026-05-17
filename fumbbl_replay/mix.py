@@ -31,7 +31,10 @@ log = logging.getLogger(__name__)
 # automatically ducks under the commentator and pops back up between
 # phrases — see DUCK_* params below.
 SFX_THUD_DELAY_MS = 0
-SFX_CROWD_DELAY_MS = 500
+# Gap between the on-field hit / TD sound and the crowd reaction.
+# 500 ms had the two SFX overlapping noticeably; 1500 ms gives the
+# first sound room to play out before the cheer / boo arrives.
+SFX_CROWD_DELAY_MS = 1500
 # Give the SFX a proper beat to land before the commentary starts.
 TTS_PRIMARY_DELAY_MS = 1800
 # Gap between play-by-play and colour-commentator reaction. Longer
@@ -54,7 +57,11 @@ DUCK_ATTACK_MS = 20
 DUCK_RELEASE_MS = 300
 # Tail pad after the last input ends so the crowd doesn't clip
 # mid-cheer in some encoders.
-TAIL_PAD_MS = 600
+# Silence at the end of every per-play mix. Needs to be long enough
+# that the voice has cleanly stopped before the next clip begins (the
+# concat filter joins audio streams back to back, so any sample still
+# sounding at the file boundary gets clipped by the next clip's start).
+TAIL_PAD_MS = 1200
 
 
 def _audio_duration_ms(path: Path) -> int:

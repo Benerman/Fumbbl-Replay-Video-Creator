@@ -226,6 +226,7 @@ def _draw_team_panel(
     cur_y += lh + 8
 
     stars = _key_players(player_lookup, side, n=3)
+    max_w = (x1 - x0) - 20
     for p in stars:
         bits = []
         if p.movement is not None: bits.append(f"MA{p.movement}")
@@ -234,18 +235,33 @@ def _draw_team_panel(
         if p.passing is not None:  bits.append(f"PA{p.passing}+")
         if p.armour is not None:   bits.append(f"AV{p.armour}+")
         stats = " ".join(bits)
-        skills = ", ".join(p.skills or [])
-        # Truncate skills tail.
-        line = f"#{p.number or '-':<2} {p.name}  •  {stats}  •  {skills or '—'}"
-        max_w = (x1 - x0) - 20
-        skill_list = list(p.skills or [])
-        while skill_list and _text_size(draw, line, small_font)[0] > max_w:
-            skill_list.pop()
-            skills = (", ".join(skill_list) + ", …") if skill_list else "…"
-            line = f"#{p.number or '-':<2} {p.name}  •  {stats}  •  {skills}"
-        lw, lh2 = _text_size(draw, line, small_font)
-        draw.text((x0 + ((x1 - x0) - lw) // 2, cur_y), line, fill=color, font=small_font)
-        cur_y += lh2 + 8
+        # Row 1: name + stats centered.
+        head = f"#{p.number or '-':<2} {p.name}  •  {stats}"
+        hw, hh = _text_size(draw, head, small_font)
+        draw.text((x0 + ((x1 - x0) - hw) // 2, cur_y), head, fill=color, font=small_font)
+        cur_y += hh + 4
+        # Row 2+: skills wrapped across as many lines as needed so the
+        # full list is visible (no "…" truncation). Group commas
+        # together within each line.
+        if p.skills:
+            line = ""
+            for skill in p.skills:
+                trial = (line + ", " + skill) if line else skill
+                if _text_size(draw, trial, small_font)[0] <= max_w:
+                    line = trial
+                else:
+                    if line:
+                        lw, lh2 = _text_size(draw, line, small_font)
+                        draw.text((x0 + ((x1 - x0) - lw) // 2, cur_y),
+                                   line, fill=DIM_TEXT, font=small_font)
+                        cur_y += lh2 + 2
+                    line = skill
+            if line:
+                lw, lh2 = _text_size(draw, line, small_font)
+                draw.text((x0 + ((x1 - x0) - lw) // 2, cur_y),
+                           line, fill=DIM_TEXT, font=small_font)
+                cur_y += lh2 + 2
+        cur_y += 10  # gap between players
 
 
 def render_outro_slide(

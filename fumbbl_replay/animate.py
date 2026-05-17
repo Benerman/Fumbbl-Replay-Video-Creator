@@ -413,12 +413,17 @@ def render_play_gif(
     # resolution hold along with the movement.
     durations_per_frame[-1] = max(frame_ms, final_pause_ms)
 
-    # Impact = first frame of the dice-reveal hold for the LAST dice
-    # group; for dice-less plays (most pure-movement TDs), use the
-    # frame just before the lingering resolution frame. We aim 1 frame
-    # back from the end of the dice hold so the SFX hits as the dice
-    # settle, not after.
-    if last_dice_frame_idx is not None:
+    # Impact = the moment SFX + voice should fire from. For most plays
+    # it's the first frame of the LAST dice-reveal hold (dice land →
+    # SFX hit). TOUCHDOWNS are the exception: the climax is the SCORE,
+    # not whatever block / dodge dice fired mid-play. A blitz TD would
+    # otherwise put the td.ogg cheer on the block roll five seconds
+    # before the player crosses the line. For TDs we use the
+    # penultimate frame instead so the cheering syncs with the ball
+    # crossing the endzone.
+    if play.kind == "touchdown":
+        impact_frame_idx = max(0, len(frames) - 2)
+    elif last_dice_frame_idx is not None:
         impact_frame_idx = max(0, last_dice_frame_idx - REVEAL_DWELL_FRAMES)
     else:
         impact_frame_idx = max(0, len(frames) - 2)
