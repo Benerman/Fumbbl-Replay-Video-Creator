@@ -98,11 +98,16 @@ def render_play_gif(
     #   physically leaves the pitch (FFB fires fieldModelRemovePlayer
     #   in the same cmd as the casualty trigger). Visualises the
     #   KO/BH/SI/RIP -> dugout transition the user expects to see.
-    # - other (skull, clutch_fail, interception): just the event cmd.
+    # - double/triple skull: walk a few commands past so the attacker's
+    #   own armor + injury rolls (he fell on his face) are included.
+    # - other (clutch_fail, interception): just the event cmd.
     if play.kind == "touchdown":
         last_stop = {"teamResultSetScore"}
     elif play.kind == "casualty":
         end = play.command_nr + 4
+        last_stop = set()
+    elif play.kind in ("double_skull", "triple_skull"):
+        end = play.command_nr + 6
         last_stop = set()
     else:
         last_stop = set()
@@ -184,14 +189,27 @@ def render_play_gif(
             and acting_now == actor_pid
         )
     dice_start = max(start, play.command_nr - WIDE_DICE_LOOKBACK)
+    # Snake-eyes (double_skull / triple_skull) sends the attacker
+    # face-first into the turf — the armor and injury rolls for HIS
+    # going-down fire in the cmds AFTER blockRoll, so we extend the
+    # window past play.command_nr to include those. Other kinds end
+    # on the trigger cmd, so dice_end stays at play.command_nr.
+    POST_IMPACT_TAIL = 4
+    if play.kind in ("double_skull", "triple_skull"):
+        dice_end = play.command_nr + POST_IMPACT_TAIL
+    else:
+        dice_end = play.command_nr
     rolls_by_cmd: dict[int, list] = {}
     for c in cmds:
         cn = int(c.get("commandNr", 0) or 0)
-        if cn < dice_start or cn > play.command_nr:
+        if cn < dice_start or cn > dice_end:
             continue
         # Only include dice rolled while the play's own actor was on
         # the clock — keeps teammates' earlier dice from leaking in.
-        if actor_pid and acting_at_cmd.get(cn) != actor_pid:
+        # For the post-impact tail (armor/injury after a snake-eyes
+        # going-down), FFB has already cleared acting_player so we
+        # bypass the filter for those cmds.
+        if actor_pid and cn <= play.command_nr and acting_at_cmd.get(cn) != actor_pid:
             continue
         groups = dice_mod.extract_for_command(replay, cn, lookback=0)
         if groups:

@@ -134,45 +134,23 @@ def _fetch_image(image_id: int, subdir: str) -> Image.Image:
 
 
 def extract_sprite(sheet: Image.Image, *, side: str, row: int,
-                    moving: bool = False, has_ball: bool = False) -> Image.Image:
+                    moving: bool = False) -> Image.Image:
     """Crop the cell for one player from a 4-column icon sheet.
 
     Column layout matches FFB's `PlayerIconFactory.getBasicIcon`:
-    home-still=0, home-moving=1, away-still=2, away-moving=3.
-
-    Some sheets stack TWO rows per position — no-ball variant on
-    even row, with-ball variant on odd row. When `has_ball=True`
-    and the sheet is tall enough, we pick row `2P+1`. For sheets
-    that don't include ball variants we fall through to the
-    no-ball cell; callers can check the cell's visibility via
-    `_has_visible_pixels` to decide whether to fall back to an
-    overlay decoration.
+    home-still=0, home-moving=1, away-still=2, away-moving=3. Rows
+    are diversity variants for the same position. FFB icon sheets
+    do NOT include with-ball variants — the ball is always rendered
+    as a separate decoration overlay (`decoration.ball`).
     """
     w, h = sheet.size
     cell_w = w // ICON_COLS
     rows_total = max(1, h // cell_w)
-    if has_ball and rows_total >= row * 2 + 2:
-        effective_row = row * 2 + 1
-    else:
-        effective_row = max(0, min(row, rows_total - 1))
+    row = max(0, min(row, rows_total - 1))
     col_base = 0 if side == "home" else 2
     col = col_base + (1 if moving else 0)
-    box = (col * cell_w, effective_row * cell_w,
-            (col + 1) * cell_w, (effective_row + 1) * cell_w)
+    box = (col * cell_w, row * cell_w, (col + 1) * cell_w, (row + 1) * cell_w)
     return sheet.crop(box)
-
-
-def _has_visible_pixels(im: Image.Image, threshold: float = 0.05) -> bool:
-    """Skip blank ball-pose cells (sheets without ball variants). Returns
-    True iff at least `threshold` of the cell's pixels have meaningful
-    alpha. RGBA only — non-RGBA assumed opaque."""
-    if im.mode != "RGBA":
-        return True
-    hist = im.split()[-1].histogram()
-    total = im.size[0] * im.size[1]
-    if total == 0:
-        return False
-    return sum(hist[64:]) / total > threshold
 
 
 def build_player_sprites(
@@ -218,27 +196,10 @@ def build_player_sprites(
             sheet_cache[pos.icon_image_id] = sheet
 
         row = position_icon_index.get(pid, 0)
-        variants: dict[str, Image.Image] = {
+        out[pid] = {
             "still":  extract_sprite(sheet, side=info.side, row=row, moving=False),
             "moving": extract_sprite(sheet, side=info.side, row=row, moving=True),
         }
-        # Ball-pose pair — only attempt the lookup when the sheet
-        # actually has rows 2P AND 2P+1 (some sheets stack no-ball /
-        # with-ball; others don't). Without the row check we'd
-        # silently store the no-ball cell as the "ball" variant and
-        # the renderer would think the sprite was showing the ball
-        # when it wasn't.
-        cell_w_check = sheet.size[0] // ICON_COLS
-        rows_total = max(1, sheet.size[1] // cell_w_check)
-        if rows_total >= row * 2 + 2:
-            ball_still = extract_sprite(sheet, side=info.side, row=row,
-                                         moving=False, has_ball=True)
-            ball_moving = extract_sprite(sheet, side=info.side, row=row,
-                                          moving=True, has_ball=True)
-            if _has_visible_pixels(ball_still) and _has_visible_pixels(ball_moving):
-                variants["still_ball"] = ball_still
-                variants["moving_ball"] = ball_moving
-        out[pid] = variants
     return out
 
 

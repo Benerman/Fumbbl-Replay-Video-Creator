@@ -61,8 +61,13 @@ PITCH_GREEN = (40, 90, 50)
 PITCH_LINE = (200, 220, 200)
 ENDZONE_TINT = (60, 110, 60)
 WIDE_TINT = (50, 100, 60)
-HOME_COLOR = (60, 110, 200)
-AWAY_COLOR = (200, 70, 60)
+# FFB convention: home sprites use the red-tinted columns 0/1 of the
+# icon sheet, away sprites the blue-tinted columns 2/3. Match the
+# label/UI colours to that so the team name in the endzone and the
+# dugout strip reads consistently with the sprite the user actually
+# sees on the pitch.
+HOME_COLOR = (200, 70, 60)    # red — matches FFB home sprite tint
+AWAY_COLOR = (60, 110, 200)   # blue — matches FFB away sprite tint
 HIGHLIGHT = (255, 215, 0)
 BALL_COLOR = (240, 240, 240)
 TEXT = (240, 240, 230)
@@ -206,17 +211,17 @@ _BALL_ICON_CACHE: Image.Image | None = None
 
 def _draw_ball(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
                state: FieldState, sprites: dict[str, dict[str, Image.Image]]) -> None:
-    """Always render the ball state. Three cases:
+    """Always render the ball state. Two cases:
 
-      - Held + sprite has a ball-pose variant: skip the overlay —
-        _draw_players already drew the with-ball sprite.
-      - Held + sheet has no ball variants: stamp FFB holdball.png on
-        top of the carrier's tile.
-      - Loose (passed / bouncing / kicked): stamp FFB ball.png at the
+      - Held: stamp FFB decorations/holdball.png on top of the
+        carrier's tile (same overlay the FFB Java client paints
+        for `pWithBall=true`).
+      - Loose (passed / bouncing / kicked): stamp game/sball at the
         coordinate so the viewer can track it across bounces.
 
-    All visuals are FFB-sourced. Falls back to a plain circle only
-    when the decoration asset can't be fetched."""
+    Falls back to a plain circle only when the FFB decoration asset
+    can't be fetched. `sprites` is unused but kept in the signature
+    for forward-compat if/when we add per-roster ball-pose variants."""
     if not state.ball:
         return
     bx, by = state.ball
@@ -225,8 +230,6 @@ def _draw_ball(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
     cx, cy = lay.bb_to_screen(bx, by)
     holder_pid = next((pid for pid, p in state.players.items() if p == (bx, by)), None)
     if holder_pid:
-        if "still_ball" in (sprites.get(holder_pid) or {}):
-            return  # the player's sprite already shows the ball
         global _HOLDBALL_ICON_CACHE
         if _HOLDBALL_ICON_CACHE is None:
             from . import sprites as sm
@@ -302,14 +305,9 @@ def _draw_players(
         # usable sprite still get a colour-disc fallback below.
 
         if sprite_pair:
-            # Prefer the ball-pose variant when this player stands on
-            # the ball and the icon sheet ships one (some FFB position
-            # sheets stack 2 rows per position: no-ball / with-ball).
-            has_ball = state.ball is not None and state.ball == (x, y)
-            if has_ball and "still_ball" in sprite_pair:
-                sprite = sprite_pair["moving_ball" if is_moving else "still_ball"]
-            else:
-                sprite = sprite_pair["moving" if is_moving else "still"]
+            # FFB icon sheets don't ship ball-in-hand variants — the
+            # ball is always a decoration overlay (see _draw_ball).
+            sprite = sprite_pair["moving" if is_moving else "still"]
             sw, sh = sprite.size
             scale = (TILE - 4) / max(sw, sh)
             sprite_resized = sprite.resize((max(1, int(sw * scale)), max(1, int(sh * scale))),
