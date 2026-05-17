@@ -1,0 +1,21 @@
+[Unit]
+Description=fumbbl-replay worker (render + upload)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fumbbl-replay
+EnvironmentFile=/opt/fumbbl-replay/deploy/.env
+ExecStart=/opt/fumbbl-replay/.venv/bin/python -m services.worker
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/fumbbl-replay/data /opt/fumbbl-replay/jobs /opt/fumbbl-replay/out
+
+[Install]
+WantedBy=multi-user.target
