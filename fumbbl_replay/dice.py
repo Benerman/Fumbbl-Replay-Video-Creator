@@ -98,6 +98,9 @@ class DiceGroup:
     successful: bool | None = None
     # Caption shown under the strip in the renderer ("armor", "injury", etc.).
     caption: str | None = None
+    # block-only: 0-based index of the die the active team chose to
+    # resolve. Other dice render dimmed in the strip.
+    chosen_index: int | None = None
 
 
 def extract_for_command(
@@ -197,8 +200,13 @@ DIE_SUCCESS = (60, 150, 70)
 DIE_FAIL = (200, 60, 50)
 
 
-def draw_block_die(canvas: Image.Image, x: int, y: int, value: int, *, size: int | None = None) -> None:
-    """Paste the FFB block-die PNG at the given top-left corner."""
+def draw_block_die(canvas: Image.Image, x: int, y: int, value: int,
+                    *, size: int | None = None, dim: bool = False) -> None:
+    """Paste the FFB block-die PNG at the given top-left corner.
+
+    When `dim=True` the die is alpha-reduced to ~40% so it reads as
+    "rolled but not chosen" — used for multi-die block strips where
+    only one die was the resolved result."""
     target = size or BLOCK_DIE_SIZE
     try:
         die = fetch_block_die(value)
@@ -209,6 +217,12 @@ def draw_block_die(canvas: Image.Image, x: int, y: int, value: int, *, size: int
     scale = target / max(die.size)
     new_size = (max(1, int(die.size[0] * scale)), max(1, int(die.size[1] * scale)))
     resized = die.resize(new_size, resample=Image.LANCZOS) if scale != 1.0 else die
+    if dim:
+        # Scale the per-pixel alpha down so the die looks faded.
+        dim_overlay = resized.copy()
+        a = dim_overlay.split()[-1].point(lambda p: int(p * 0.4))
+        dim_overlay.putalpha(a)
+        resized = dim_overlay
     sw, sh = resized.size
     canvas.alpha_composite(resized, (x + (target - sw) // 2, y + (target - sh) // 2))
 
@@ -251,8 +265,13 @@ def render_group_strip(group: DiceGroup, font: ImageFont.ImageFont | None = None
         w = len(group.rolls) * s + (len(group.rolls) - 1) * gap
         canvas = Image.new("RGBA", (w + 4, s + 4 + caption_h), (0, 0, 0, 0))
         x = 2
-        for v in group.rolls:
-            draw_block_die(canvas, x, 2, v)
+        # When the active team picked one die out of 2/3, dim the rest
+        # so the chosen face pops. Single-die blocks stay full bright.
+        chosen = group.chosen_index if (group.chosen_index is not None
+                                          and len(group.rolls) > 1) else None
+        for i, v in enumerate(group.rolls):
+            dim = chosen is not None and i != chosen
+            draw_block_die(canvas, x, 2, v, dim=dim)
             x += s + gap
     elif group.kind == "2d6":
         s = D6_SIZE

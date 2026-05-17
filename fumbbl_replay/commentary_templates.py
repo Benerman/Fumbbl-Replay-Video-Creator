@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .analyzer import MatchAnalysis, PivotalPlay
+from .analyzer import MatchAnalysis, PivotalPlay, _expand_injury_label
 
 
 # Each pool is a list of single-sentence templates. The renderer picks
@@ -350,5 +350,5 @@ def _vars(p: PivotalPlay) -> dict[str, Any]:
         "inflicter": inflicter,
         "team": p.team_name,
         "opp": p.against_team,
-        "injury": p.injury_label or "a nasty knock",
+        "injury": _expand_injury_label(p.injury_label) or "a nasty knock",
     }

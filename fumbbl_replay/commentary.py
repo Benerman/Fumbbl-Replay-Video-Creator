@@ -29,7 +29,15 @@ from typing import Any
 
 import requests
 
-from .analyzer import MatchAnalysis
+from .analyzer import MatchAnalysis, _expand_injury_label
+
+
+def _expand_for_commentary(label: str | None) -> str | None:
+    """Same expansion as the headline, but TTS-friendly: full words ("-1
+    Armor Value") so Kokoro doesn't read "AV" as two letters."""
+    if not label:
+        return label
+    return _expand_injury_label(label)
 
 log = logging.getLogger(__name__)
 
@@ -225,7 +233,7 @@ def _build_user_prompt(analysis: MatchAnalysis) -> str:
             "turn": p.turn,
             "tags": p.tags,
             "reason": p.reason,
-            "injury": p.injury_label,
+            "injury": _expand_for_commentary(p.injury_label),
         })
     return (
         f"Match: {analysis.summary_line()}\n"

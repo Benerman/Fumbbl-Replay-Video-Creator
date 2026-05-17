@@ -171,12 +171,19 @@ def mix_play_audio(
     else:
         filt_parts.append("[voice_mix]anull[mix]")
 
-    # Tail pad: at minimum a small breath; bump to `target_duration_ms`
-    # if the caller wants the audio to match the gif length so the
-    # video can play the gif to completion without looping.
+    # Two-stage tail handling so we both (a) match the gif length and
+    # (b) always leave a breath of silence after the voice ends. The
+    # `whole_dur` extends the mix UP TO the gif length when shorter
+    # (silent pad fills the tail); the second `pad_dur` always tacks
+    # TAIL_PAD_MS of silence ONTO whatever the result is. Without the
+    # second pad, a play whose voice runs past the gif length ends
+    # exactly on the voice's last syllable — perceived as "cut off."
     if target_duration_ms and target_duration_ms > 0:
         filt_parts.append(
-            f"[mix]apad=whole_dur={target_duration_ms / 1000.0}[out]"
+            f"[mix]apad=whole_dur={target_duration_ms / 1000.0}[mix_padded]"
+        )
+        filt_parts.append(
+            f"[mix_padded]apad=pad_dur={TAIL_PAD_MS / 1000.0}[out]"
         )
         final_label = "[out]"
     elif TAIL_PAD_MS:

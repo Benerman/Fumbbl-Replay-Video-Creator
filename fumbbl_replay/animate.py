@@ -222,6 +222,37 @@ def render_play_gif(
         if groups:
             rolls_by_cmd[cn] = groups
 
+    # Patch chosen_index onto block DiceGroups by scanning blockChoice
+    # reports in the same window. FFB fires blockChoice one or two cmds
+    # after the corresponding blockRoll (the user picked which die to
+    # resolve). We match by the rolled values + nrOfDice — same dice
+    # tuple usually means same block, even across cmds.
+    for c in cmds:
+        cn = int(c.get("commandNr", 0) or 0)
+        if cn < dice_start or cn > dice_end + 4:
+            continue
+        for r in (c.get("reportList") or {}).get("reports") or []:
+            if r.get("reportId") != "blockChoice":
+                continue
+            chosen_idx = r.get("diceIndex")
+            chosen_rolls = r.get("blockRoll") or []
+            if chosen_idx is None or not chosen_rolls:
+                continue
+            # Find the most recent matching block group in rolls_by_cmd
+            # whose rolls match (and chosen_index not yet set).
+            for cn2 in sorted(rolls_by_cmd, reverse=True):
+                if cn2 > cn:
+                    continue
+                match = None
+                for g in rolls_by_cmd[cn2]:
+                    if (g.kind == "block" and g.chosen_index is None
+                            and g.rolls == list(chosen_rolls)):
+                        match = g
+                        break
+                if match:
+                    match.chosen_index = int(chosen_idx)
+                    break
+
     # Render frames. Whenever a new dice group is about to appear we
     # reveal them one at a time and HOLD each new reveal for a generous
     # beat so the viewer can read the block / armor / injury rolls.
