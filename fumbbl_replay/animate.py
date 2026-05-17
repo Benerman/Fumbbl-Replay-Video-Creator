@@ -335,17 +335,44 @@ def render_play_gif(
 
         # Sequential reveal: one new group per pause. The hold frames
         # use the PRE-cmd state so the player is still on the pitch
-        # (or still standing) at the moment the dice land — the
-        # post-state-change collapse to prone / dugout happens on
-        # the very next frame.
+        # (or still standing) at the moment the dice land.
+        #
+        # Reveal is split into two phases on multi-die block rolls so
+        # the viewer can read all the faces BEFORE we highlight the
+        # chosen one:
+        #   Phase 1 (bright): all dice at full alpha, chosen_index
+        #                     temporarily masked. ~0.8s.
+        #   Phase 2 (dim):    chosen_index restored, non-chosen dies
+        #                     fade to 40% alpha. ~1.8s.
+        # Single-die rolls and 2d6 strips render identically in both
+        # phases (no chosen-index meaning); the total dwell is the same.
+        PHASE_1_FRAMES = 4    # ~0.8s of "all dice bright"
+        PHASE_2_FRAMES = REVEAL_DWELL_FRAMES + 1 - PHASE_1_FRAMES
         for group in new_groups:
             active_dice.append((DICE_LINGER_FRAMES, [group]))
             visible = [g for _, groups in active_dice for g in groups]
-            reveal_frame, reveal_png = _render(pre_state, visible, frame_idx, blitz_active=blitz_active_now); frame_idx += 1
-            for _ in range(REVEAL_DWELL_FRAMES + 1):
-                frames.append(reveal_frame)
+
+            # Phase 1: all dice bright. Temporarily clear chosen_index
+            # on every block group in the visible set so render_group_strip
+            # draws every face at full alpha.
+            stash = [(g, g.chosen_index) for g in visible if g.kind == "block"]
+            for g, _ in stash:
+                g.chosen_index = None
+            bright_frame, bright_png = _render(pre_state, visible, frame_idx, blitz_active=blitz_active_now); frame_idx += 1
+            for _ in range(PHASE_1_FRAMES):
+                frames.append(bright_frame)
                 durations_per_frame.append(frame_ms)
-                frame_pngs.append(reveal_png)
+                frame_pngs.append(bright_png)
+                movement_only.append(False)
+
+            # Phase 2: restore chosen_index, render with the dim effect.
+            for g, idx in stash:
+                g.chosen_index = idx
+            dim_frame, dim_png = _render(pre_state, visible, frame_idx, blitz_active=blitz_active_now); frame_idx += 1
+            for _ in range(PHASE_2_FRAMES):
+                frames.append(dim_frame)
+                durations_per_frame.append(frame_ms)
+                frame_pngs.append(dim_png)
                 movement_only.append(False)
             last_dice_frame_idx = len(frames) - 1
 

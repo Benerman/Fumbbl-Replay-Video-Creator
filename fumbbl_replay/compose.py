@@ -163,6 +163,42 @@ def _concat_clips(clips: Sequence[Path], out_path: Path) -> bool:
 
 
 
+def encode_still_clip(image_path: Path, audio: Path, out: Path,
+                       *, min_duration_ms: int = 0) -> bool:
+    """Encode a still PNG + audio into an mp4. Used for intro / outro
+    title cards. Stretches the image to the audio duration (or
+    min_duration_ms, whichever is longer)."""
+    audio_dur = _audio_duration_seconds(audio)
+    if audio_dur <= 0:
+        log.warning("no audio for still clip %s", image_path.name)
+        return False
+    target_dur = max(audio_dur, min_duration_ms / 1000.0)
+    vf = (
+        f"loop=loop=-1:size=1,trim=duration={target_dur:.3f},"
+        f"fps={FPS},pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-loop", "1", "-i", str(image_path),
+        "-i", str(audio),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-t", f"{target_dur:.3f}",
+        "-vf", vf,
+        "-c:v", VIDEO_CODEC, "-preset", VIDEO_PRESET, "-crf", VIDEO_CRF,
+        "-pix_fmt", VIDEO_PIX_FMT,
+        "-profile:v", "main", "-level:v", "4.0", "-bf", "0",
+        "-c:a", AUDIO_CODEC, "-b:a", "192k", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart",
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        log.warning("still-clip encode failed for %s: %s", image_path.name, e.stderr or e)
+        return False
+
+
 def compose_highlight_reel(
     gifs_by_play: dict[int, Path],
     audio_by_play: dict[int, Path],
@@ -171,6 +207,8 @@ def compose_highlight_reel(
     *,
     work_dir: Path | None = None,
     frames_dirs_by_play: dict[int, Path] | None = None,
+    intro_clip: Path | None = None,
+    outro_clip: Path | None = None,
 ) -> Path | None:
     """Stitch per-play sources + mixed MP3s into one MP4 highlight reel.
 
@@ -194,6 +232,8 @@ def compose_highlight_reel(
     frames_dirs_by_play = frames_dirs_by_play or {}
 
     clips: list[Path] = []
+    if intro_clip and intro_clip.exists():
+        clips.append(intro_clip)
     for idx in sorted(set(gifs_by_play) & set(audio_by_play)):
         gif = gifs_by_play[idx]
         audio = audio_by_play[idx]
@@ -202,11 +242,13 @@ def compose_highlight_reel(
         if _encode_play_clip(gif, audio, clip,
                              frames_dir=frames_dirs_by_play.get(idx)):
             clips.append(clip)
+    if outro_clip and outro_clip.exists():
+        clips.append(outro_clip)
     if not clips:
         log.warning("no per-play clips produced; nothing to concat")
         return None
 
     if _concat_clips(clips, out_path):
-        log.info("composed %d play(s) into %s", len(clips), out_path)
+        log.info("composed %d clip(s) into %s", len(clips), out_path)
         return out_path
     return None

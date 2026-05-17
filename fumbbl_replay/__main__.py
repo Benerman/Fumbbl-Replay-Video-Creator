@@ -165,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("commentary generation failed: %s", e)
 
     tts_paths: dict[int, Path] = {}
+    tts = None
+    voice_a: str | None = None
     if want_tts_dir:
         from . import tts
 
@@ -346,17 +348,79 @@ def main(argv: list[str] | None = None) -> int:
             log.warning("audio mix failed: %s", e)
 
     if args.video:
-        from . import compose
+        from . import compose, framing
         import shutil as _shutil
         if not gif_paths:
             log.warning("--video needs --gifs output; nothing to compose")
         elif not mix_paths:
             log.warning("--video needs --mix output; nothing to compose")
         else:
+            # Render intro + outro title cards and their narrated audio,
+            # then encode as still-image MP4 clips that the compose
+            # step will prepend / append to the per-play sequence.
+            intro_clip_path: Path | None = None
+            outro_clip_path: Path | None = None
+            try:
+                framing_root = args.video.parent / args.orientation / "framing"
+                framing_root.mkdir(parents=True, exist_ok=True)
+                match_stats = framing.compute_match_stats(replay, analysis)
+
+                intro_png = framing_root / "intro.png"
+                framing.render_intro_slide(
+                    analysis, player_lookup or {}, intro_png,
+                    orientation=args.orientation,
+                    home_logo=home_logo_img, away_logo=away_logo_img,
+                )
+                outro_png = framing_root / "outro.png"
+                framing.render_outro_slide(
+                    analysis, match_stats, outro_png,
+                    orientation=args.orientation,
+                    home_logo=home_logo_img, away_logo=away_logo_img,
+                )
+
+                # TTS narration for intro + outro using the existing voice.
+                if want_tts_dir:
+                    intro_line = framing.generate_intro_line(analysis, player_lookup or {})
+                    outro_line = framing.generate_outro_line(analysis)
+                    intro_audio_dir = want_tts_dir.parent / "framing_tts"
+                    intro_audio_paths = tts.generate_audio(
+                        {0: intro_line}, intro_audio_dir,
+                        pivotal_kinds={0: "intro"},
+                        backend=args.tts_backend,
+                        voice=voice_a,
+                    )
+                    outro_audio_paths = tts.generate_audio(
+                        {0: outro_line}, intro_audio_dir,
+                        pivotal_kinds={0: "outro"},
+                        backend=args.tts_backend,
+                        voice=voice_a,
+                    )
+                    intro_audio = intro_audio_paths.get(0)
+                    outro_audio = outro_audio_paths.get(0)
+
+                    clip_work = args.video.parent / f"_clips_{args.video.stem}"
+                    clip_work.mkdir(parents=True, exist_ok=True)
+                    if intro_audio and intro_audio.exists():
+                        intro_clip_path = clip_work / "00_intro.mp4"
+                        if not compose.encode_still_clip(intro_png, intro_audio,
+                                                          intro_clip_path,
+                                                          min_duration_ms=4000):
+                            intro_clip_path = None
+                    if outro_audio and outro_audio.exists():
+                        outro_clip_path = clip_work / "99_outro.mp4"
+                        if not compose.encode_still_clip(outro_png, outro_audio,
+                                                          outro_clip_path,
+                                                          min_duration_ms=4000):
+                            outro_clip_path = None
+            except Exception as e:
+                log.warning("intro/outro generation failed: %s", e)
+
             try:
                 result = compose.compose_highlight_reel(
                     gif_paths, mix_paths, kinds, args.video,
                     frames_dirs_by_play=frames_dirs,
+                    intro_clip=intro_clip_path,
+                    outro_clip=outro_clip_path,
                 )
                 if result:
                     log.info("composed highlight video at %s", result)
