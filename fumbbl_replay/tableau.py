@@ -175,10 +175,10 @@ def render_tableau(
     draw.text((lay.ox, 28), _header_text(play, weather=weather), fill=TEXT, font=font)
     # Layer 5: players + their state markers + the highlight ring.
     _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
-    # Layer 6: ball — drawn AFTER players so the held-ball icon sits
-    # over the carrier's sprite (was previously drawn under, which
-    # is why you couldn't see it through the player).
-    _draw_ball(img, draw, lay, state)
+    # Layer 6: ball — drawn AFTER players so the held-ball overlay
+    # sits over the carrier's sprite when the sprite doesn't already
+    # show the ball-pose variant.
+    _draw_ball(img, draw, lay, state, sprites)
     # Layer 6b: BLITZ badge on the OPPONENT that was marked against
     # (the block defender during the blitz). We only show the badge
     # when we actually know who that was — for plays where the action
@@ -200,58 +200,63 @@ def render_tableau(
     return out_path
 
 
-def _draw_football(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int) -> None:
-    """Stamp a football: brown oval body, cream laces, dark outline.
-    cx/cy is the centre, r is the radius along the long axis."""
-    body = (170, 95, 40)
-    seam = (255, 245, 215)
-    outline = (28, 14, 4)
-    draw.ellipse([cx - r, cy - int(r * 0.7),
-                   cx + r, cy + int(r * 0.7)],
-                  fill=body, outline=outline, width=max(2, r // 5))
-    # Centre seam + small cross-laces
-    lace_w = max(2, r // 6)
-    draw.line([cx - int(r * 0.55), cy, cx + int(r * 0.55), cy],
-              fill=seam, width=lace_w)
-    for dx in (-int(r * 0.32), 0, int(r * 0.32)):
-        draw.line([cx + dx, cy - int(r * 0.32),
-                    cx + dx, cy + int(r * 0.32)],
-                   fill=seam, width=max(1, lace_w - 1))
+_HOLDBALL_ICON_CACHE: Image.Image | None = None
+_BALL_ICON_CACHE: Image.Image | None = None
 
 
 def _draw_ball(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
-               state: FieldState) -> None:
-    """Render the ball. If a player stands on the ball's tile it's
-    being held — overlay a clear football icon centred high on their
-    sprite (above the head) so the carrier reads at a glance.
-    Otherwise the ball is loose (bouncing / passed / kicked) — draw
-    a free football at the coordinate so the viewer can track it
-    across bounces and pass arcs."""
+               state: FieldState, sprites: dict[str, dict[str, Image.Image]]) -> None:
+    """Always render the ball state. Three cases:
+
+      - Held + sprite has a ball-pose variant: skip the overlay —
+        _draw_players already drew the with-ball sprite.
+      - Held + sheet has no ball variants: stamp FFB holdball.png on
+        top of the carrier's tile.
+      - Loose (passed / bouncing / kicked): stamp FFB ball.png at the
+        coordinate so the viewer can track it across bounces.
+
+    All visuals are FFB-sourced. Falls back to a plain circle only
+    when the decoration asset can't be fetched."""
     if not state.ball:
         return
     bx, by = state.ball
     if not (0 <= bx < PITCH_WIDTH and 0 <= by < PITCH_HEIGHT):
         return
     cx, cy = lay.bb_to_screen(bx, by)
-    holder_pid = None
-    for pid, (px, py) in state.players.items():
-        if (px, py) == (bx, by):
-            holder_pid = pid
-            break
+    holder_pid = next((pid for pid, p in state.players.items() if p == (bx, by)), None)
     if holder_pid:
-        # Sit the ball just above the player's head so it's not
-        # competing with the sprite for visual attention. Tile is
-        # TILE px; player sprite fills most of it. Anchoring just
-        # above the top edge of the tile keeps the ball legible
-        # without obscuring face/number.
-        r = max(9, TILE // 4)
-        bx_cx = cx
-        bx_cy = cy - TILE // 2 + int(r * 0.6)
-        _draw_football(draw, bx_cx, bx_cy, r)
+        if "still_ball" in (sprites.get(holder_pid) or {}):
+            return  # the player's sprite already shows the ball
+        global _HOLDBALL_ICON_CACHE
+        if _HOLDBALL_ICON_CACHE is None:
+            from . import sprites as sm
+            _HOLDBALL_ICON_CACHE = sm.fetch_ffb_decoration("holdball")
+        size = max(24, TILE // 2)
+        if _HOLDBALL_ICON_CACHE is not None:
+            icon = _HOLDBALL_ICON_CACHE
+            if icon.size != (size, size):
+                icon = icon.resize((size, size), resample=Image.LANCZOS)
+            img.alpha_composite(icon, (cx - size // 2, cy - size // 2 - 4))
+            return
+        r = size // 2
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                     fill=BALL_COLOR, outline=(30, 20, 10), width=max(2, r // 6))
         return
-    # Loose ball: bouncing or in flight. Bigger so the viewer can pick
-    # it up against the pitch and track it across bounces.
-    _draw_football(draw, cx, cy, max(10, TILE // 3))
+    # Loose ball — use FFB's standalone ball asset at the coordinate.
+    global _BALL_ICON_CACHE
+    if _BALL_ICON_CACHE is None:
+        from . import sprites as sm
+        _BALL_ICON_CACHE = sm.fetch_ffb_decoration("game/sball_60x60")
+    size = max(24, TILE // 2)
+    if _BALL_ICON_CACHE is not None:
+        icon = _BALL_ICON_CACHE
+        if icon.size != (size, size):
+            icon = icon.resize((size, size), resample=Image.LANCZOS)
+        img.alpha_composite(icon, (cx - size // 2, cy - size // 2))
+        return
+    r = size // 2
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                 fill=BALL_COLOR, outline=(30, 20, 10), width=max(2, r // 6))
 
 
 def _draw_players(
@@ -298,7 +303,14 @@ def _draw_players(
                      outline=color, width=2)
 
         if sprite_pair:
-            sprite = sprite_pair["moving" if is_moving else "still"]
+            # Prefer the ball-pose variant when this player stands on
+            # the ball and the icon sheet ships one (some FFB position
+            # sheets stack 2 rows per position: no-ball / with-ball).
+            has_ball = state.ball is not None and state.ball == (x, y)
+            if has_ball and "still_ball" in sprite_pair:
+                sprite = sprite_pair["moving_ball" if is_moving else "still_ball"]
+            else:
+                sprite = sprite_pair["moving" if is_moving else "still"]
             sw, sh = sprite.size
             scale = (TILE - 4) / max(sw, sh)
             sprite_resized = sprite.resize((max(1, int(sw * scale)), max(1, int(sh * scale))),
