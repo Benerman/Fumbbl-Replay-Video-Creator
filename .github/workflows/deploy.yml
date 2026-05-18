@@ -1,0 +1,71 @@
+# Manual deploy to the self-hosted runner on the VPS.
+#
+# This workflow exists ONLY to put code on the production host, and
+# it has multiple safety gates layered on top of each other:
+#
+#   1. Trigger is workflow_dispatch only. There is no `on: push:`.
+#      The only way this workflow runs is by clicking "Run workflow"
+#      in the Actions tab. Merging to main does NOT auto-deploy.
+#   2. Runs only on a self-hosted runner labelled `fumbbl-deploy`.
+#      GitHub-hosted runners can't pick this job up by mistake.
+#   3. Optional GitHub Environment gate: set `environment: production`
+#      below and configure required reviewers in GH settings to
+#      require explicit human approval before the job starts.
+#   4. The CI workflow runs against every PR/push, so the code being
+#      deployed has already been verified to compile, import, and
+#      build into a working image before this workflow is invoked.
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag, or commit SHA to deploy'
+        default: 'main'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Don't run two deploys at once — that would race on the host's
+# git working tree.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: docker compose up on host
+    runs-on: [self-hosted, fumbbl-deploy]
+
+    # Uncomment to require manual approval from GitHub Environments
+    # reviewers before this job starts. Configure reviewers at:
+    # Settings → Environments → production → Required reviewers.
+    # environment: production
+
+    steps:
+      - name: Show deploy parameters
+        run: |
+          echo "Deploying ref: ${{ inputs.ref }}"
+          echo "Triggered by:  ${{ github.actor }}"
+          echo "Host:          $(hostname)"
+          echo "Workspace:     $RUNNER_WORKSPACE"
+
+      - name: Run deploy.sh
+        # The deploy clone lives at $FUMBBL_DEPLOY_PATH on the host
+        # (set this on the runner; default below). The script handles
+        # fetch + checkout + docker compose build + up.
+        env:
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/fumbbl-replay' }}
+          DEPLOY_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$DEPLOY_PATH/.git" ]; then
+            echo "Error: $DEPLOY_PATH is not a git checkout. Clone the"
+            echo "repo there before running the deploy workflow."
+            exit 1
+          fi
+          cd "$DEPLOY_PATH"
+          bash deploy/deploy.sh "$DEPLOY_REF"
