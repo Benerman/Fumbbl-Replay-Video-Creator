@@ -3,12 +3,19 @@
 Starts the py-cord client, an aiohttp callback server for per-guild
 OAuth flows, and a background poller that delivers job results back
 to Discord.
+
+Slash-command sync notes:
+  - py-cord syncs slash commands globally by default. Global commands
+    can take up to an hour to propagate to all guilds. For dev /
+    single-server deployments set DISCORD_DEV_GUILD_IDS in .env to a
+    comma-separated list of guild ids; we'll pass them as debug_guilds
+    so commands sync instantly to just those servers.
 """
 
 from __future__ import annotations
 
 import asyncio
-import signal
+import os
 
 import discord
 
@@ -36,7 +43,28 @@ async def _prune_loop() -> None:
             log.exception("rate-log prune failed")
 
 
+def _parse_debug_guilds(raw: str | None) -> list[int]:
+    if not raw:
+        return []
+    out: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.append(int(part))
+    return out
+
+
 def main() -> None:
+    """Synchronous entrypoint that hands off to py-cord's bot.run().
+
+    bot.run() owns the event loop end-to-end — it creates the loop,
+    installs SIGINT/SIGTERM handlers, runs bot.start() to completion,
+    and tears the loop down cleanly. Doing it ourselves (the old
+    asyncio.new_event_loop() + run_until_complete dance) was causing
+    py-cord to attribute the gateway socket to a different loop than
+    the one we were running on, which manifested as repeating
+    "heartbeat blocked for more than 30 seconds" warnings.
+    """
     ensure_dirs()
     settings = load_settings()
     get_connection()  # opens + applies schema migrations
@@ -46,15 +74,36 @@ def main() -> None:
     oauth = OAuthHandler(settings, crypto)
 
     intents = discord.Intents.default()
-    bot = discord.Bot(intents=intents)
+    debug_guilds = _parse_debug_guilds(os.environ.get("DISCORD_DEV_GUILD_IDS"))
+    if debug_guilds:
+        log.info("slash commands will sync INSTANTLY to guilds %s", debug_guilds)
+        bot = discord.Bot(intents=intents, debug_guilds=debug_guilds)
+    else:
+        log.info(
+            "slash commands will sync GLOBALLY (up to 1h propagation). "
+            "Set DISCORD_DEV_GUILD_IDS=<guild_id,...> in .env for instant "
+            "sync to specific servers."
+        )
+        bot = discord.Bot(intents=intents)
 
     register(bot, settings, in_flight, oauth)
+
+    # Simple ping for quick connectivity testing — appears alongside
+    # /generate-highlight in Discord's slash-command picker.
+    @bot.slash_command(name="ping", description="Health check; replies with pong.")
+    async def ping(ctx: discord.ApplicationContext) -> None:
+        await ctx.respond("pong 🏓", ephemeral=True)
+
     poller = Poller(bot, in_flight)
 
     @bot.event
-    async def on_ready() -> None:  # noqa: D401
+    async def on_ready() -> None:
         log.info("logged in as %s (id=%s)", bot.user, bot.user and bot.user.id)
-        # Lazy start of the OAuth callback server + poller after Discord is ready.
+        log.info(
+            "%d slash command(s) registered: %s",
+            len(bot.application_commands),
+            ", ".join(c.name for c in bot.application_commands),
+        )
         try:
             await oauth.start()
         except Exception:
@@ -72,32 +121,8 @@ def main() -> None:
         except Exception:
             pass
 
-    # Graceful shutdown on SIGTERM (docker stop).
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    async def _shutdown() -> None:
-        log.info("shutting down…")
-        await poller.stop()
-        await oauth.stop()
-        await bot.close()
-
-    def _signal(*_a) -> None:
-        loop.create_task(_shutdown())
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _signal)
-        except NotImplementedError:
-            # Windows: signal handler not supported on selector loop.
-            signal.signal(sig, lambda *_: _signal())
-
-    try:
-        loop.run_until_complete(bot.start(settings.discord_bot_token))
-    except KeyboardInterrupt:
-        loop.run_until_complete(_shutdown())
-    finally:
-        loop.close()
+    # bot.run() blocks until the gateway disconnects + signal handlers fire.
+    bot.run(settings.discord_bot_token)
 
 
 if __name__ == "__main__":

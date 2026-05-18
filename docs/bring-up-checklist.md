@@ -93,6 +93,17 @@ portal + Google verification).
       <https://discord.com/developers/applications> → your app →
       General Information → Application ID. Paste into
       `DISCORD_APPLICATION_ID`.
+- [ ] **Optional but recommended for first-time setup**: set
+      `DISCORD_DEV_GUILD_IDS` so slash commands sync to your
+      server **instantly** instead of going through Discord's
+      global registry (which takes up to an hour to propagate).
+      1. In Discord, enable Developer Mode: User Settings →
+         Advanced → toggle "Developer Mode".
+      2. Right-click your server icon in the channel list → **Copy Server ID**.
+      3. Paste into `DISCORD_DEV_GUILD_IDS=<that-number>` in
+         `deploy/.env`. Comma-separate multiple IDs if you have
+         several test servers.
+      Leave blank for production multi-guild use (global sync).
 - [ ] Leave the other defaults (paths point at `/app/...`
       inside the container which is where the volumes mount).
 
@@ -178,8 +189,19 @@ print("default channel id:", row["yt_channel_id"] if row else "MISSING")'
 
 ## 6. Smoke-test the bot in Discord
 
-- [ ] In your Discord server (the one you invited the bot to),
-      type `/generate-highlight 4700552` in any channel.
+- [ ] **First, type `/ping`** in any channel to confirm the bot's
+      slash commands are registered. If `/ping` doesn't autocomplete:
+      - **You skipped step 3's `DISCORD_DEV_GUILD_IDS`?** Global
+        commands take up to 1 hour to propagate. Fill that env in,
+        `docker compose restart bot`, and the commands appear
+        instantly.
+      - **Bot was invited without `applications.commands` scope?**
+        Re-do the invite URL (step 2) making sure both `bot` AND
+        `applications.commands` are checked, kick the bot from
+        your server, re-invite.
+      - **Bot is offline (grey)?** Check `docker compose logs bot`.
+- [ ] Once `/ping` works, type `/generate-highlight 4700552` in any
+      channel.
 - [ ] Expected flow (timestamps approximate):
       - `< 1 s`: bot acknowledges with **"📋 Queued. Rendering
         will start shortly…"**
