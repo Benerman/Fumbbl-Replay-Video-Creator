@@ -42,7 +42,18 @@ ENV JOBS_ROOT=/app/jobs \
     OUT_ROOT=/app/out \
     DATA_ROOT=/app/data \
     FUMBBL_REPLAY_CACHE=/app/data/cache \
-    FUMBBL_KOKORO_CACHE=/app/data/cache/kokoro
+    FUMBBL_KOKORO_CACHE=/app/data/cache/kokoro \
+    # Cap ML thread pools. onnxruntime (used by kokoro TTS) otherwise
+    # spawns one thread per host CPU and tries to bind each to a
+    # specific core via pthread_setaffinity_np. Inside cgroup-limited
+    # containers the affinity bind fails with EINVAL and emits a noisy
+    # error line per thread. FUMBBL_ONNX_THREADS is the knob fumbbl_replay
+    # reads programmatically to pass SessionOptions(intra_op_num_threads=...)
+    # to Kokoro — the only fix that fully silences the error since
+    # onnxruntime's own thread pool ignores OMP_NUM_THREADS.
+    OMP_NUM_THREADS=2 \
+    MKL_NUM_THREADS=2 \
+    FUMBBL_ONNX_THREADS=2
 
 # Each compose service overrides this `command:` with either
 # `python -m services.bot` or `python -m services.worker`.

@@ -149,6 +149,44 @@ _KOKORO_MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/downlo
 _KOKORO_VOICES_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 
 
+def _build_kokoro(KokoroCls, model_path, voices_path):
+    """Construct Kokoro with an explicit onnxruntime thread count.
+
+    Without this, onnxruntime spawns one thread per host CPU and tries
+    to pin each via pthread_setaffinity_np. Inside cgroup-limited
+    containers the affinity bind fails with EINVAL and onnxruntime
+    emits a noisy error line per thread. The error message itself
+    recommends "Specify the number of threads explicitly so the
+    affinity is not set", which is what we do here.
+
+    kokoro-onnx >=0.4 accepts sess_options via the InferenceSession
+    constructor; older versions ignore the kwarg. We try with options
+    and fall back to the bare constructor on TypeError.
+    """
+    try:
+        import onnxruntime as ort
+        n_intra = int(os.environ.get("FUMBBL_ONNX_THREADS", "2"))
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = n_intra
+        opts.inter_op_num_threads = 1
+    except Exception:
+        opts = None
+
+    if opts is not None:
+        for kwarg in ("sess_options", "session_options", "options"):
+            try:
+                return KokoroCls(str(model_path), str(voices_path), **{kwarg: opts})
+            except TypeError:
+                continue
+            except Exception:
+                # If the kwarg was accepted but session construction failed,
+                # fall through to the bare constructor below rather than
+                # masking a real config error.
+                break
+
+    return KokoroCls(str(model_path), str(voices_path))
+
+
 class _KokoroBackend:
     """Local neural TTS via kokoro-onnx. Model + voice files cached on
     disk under the shared fumbbl-replay cache; first call downloads
@@ -177,7 +215,7 @@ class _KokoroBackend:
         self._download_if_missing(voices_path, _KOKORO_VOICES_URL)
         if _KokoroBackend._instance is None:
             log.info("loading Kokoro model from %s", cache_dir)
-            _KokoroBackend._instance = Kokoro(str(model_path), str(voices_path))
+            _KokoroBackend._instance = _build_kokoro(Kokoro, model_path, voices_path)
         self._kokoro = _KokoroBackend._instance
         self.voice = voice
 
