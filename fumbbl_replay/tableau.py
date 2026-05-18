@@ -747,8 +747,9 @@ def _paste_centered_logo(canvas: Image.Image, logo: Image.Image,
 
 def _header_text(p: PivotalPlay, *, weather: str | None = None) -> str:
     bits = [p.team_name, "vs", p.against_team]
-    if p.score_home is not None and p.score_away is not None:
-        bits.append(f"  {p.score_home}-{p.score_away}")
+    score_chunk = _score_chunk(p)
+    if score_chunk:
+        bits.append(score_chunk)
     if p.half:
         bits.append(f"  half {p.half}")
     if p.turn:
@@ -756,6 +757,27 @@ def _header_text(p: PivotalPlay, *, weather: str | None = None) -> str:
     if weather:
         bits.append(f"  •  {weather}")
     return " ".join(bits)
+
+
+def _score_chunk(p: PivotalPlay) -> str | None:
+    """Score string for the tableau header.
+
+    For TDs we show the running score CHANGE ("0-1 -> 1-1") so the
+    update is visible in the same clip the TD lands in. For everything
+    else we show the current score so the reel keeps reading naturally
+    in chronological order.
+    """
+    if p.score_home is None or p.score_away is None:
+        return None
+    cur = f"{p.score_home}-{p.score_away}"
+    if (p.kind == "touchdown"
+            and p.score_home_before is not None
+            and p.score_away_before is not None
+            and (p.score_home_before, p.score_away_before)
+            != (p.score_home, p.score_away)):
+        prev = f"{p.score_home_before}-{p.score_away_before}"
+        return f"  {prev} -> {cur}"
+    return f"  {cur}"
 
 
 def _dim(im: Image.Image) -> Image.Image:
