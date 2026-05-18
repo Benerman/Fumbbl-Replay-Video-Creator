@@ -1,0 +1,22 @@
+[Unit]
+Description=fumbbl-replay Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/fumbbl-replay
+EnvironmentFile=/opt/fumbbl-replay/deploy/.env
+ExecStart=/opt/fumbbl-replay/.venv/bin/python -m services.bot
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+# Drop unnecessary permissions.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/fumbbl-replay/data /opt/fumbbl-replay/jobs
+
+[Install]
+WantedBy=multi-user.target

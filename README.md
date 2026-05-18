@@ -140,8 +140,99 @@ scripts/
 | FUMBBL position sprites in tableaux                                       | done   |
 | Epic-fail events (self-kill, triple/double skull streaks, clutch fumble)  | done   |
 | LLM commentary script (one line per pivotal play, Claude API)             | done   |
-| TTS narration                                                             | todo   |
-| ffmpeg compose final mp4                                                 | todo   |
+| TTS narration                                                             | done   |
+| ffmpeg compose final mp4                                                 | done   |
+| Discord bot + YouTube uploader (`services/`)                              | done   |
+
+## Discord bot + YouTube uploader
+
+Two long-running services live alongside the `fumbbl_replay` library:
+
+- **`services.bot`** (one process) — listens on Discord, exposes
+  `/generate-highlight <match-ref>` plus admin slash commands. Validates,
+  dedup-checks, rate-limits and writes a job file to `jobs/queue/`.
+- **`services.worker`** (one process) — drains `jobs/queue/`, runs
+  `fumbbl_replay.main()` to produce the MP4, uploads to YouTube, records
+  the result in SQLite, cleans up the intermediates, and writes a
+  `jobs/done/` marker the bot picks up.
+
+The shared SQLite at `data/app.sqlite3` carries:
+- `bot_defaults` — the operator's encrypted YouTube refresh token
+- `guild_config` — per-server YouTube overrides (also encrypted)
+- `processed_replays` — dedup table so a re-request returns the cached
+  YouTube link instantly
+- `rate_log` — append-only per-guild invocation log for the
+  3-per-10-minute rate limit
+
+YouTube refresh tokens are encrypted at rest with Fernet
+(`cryptography` + `FERNET_MASTER_KEY` env). Per-guild OAuth is wired
+through a small aiohttp callback that the bot exposes on port `38080`
+of the host — admins run `/highlight-config set-youtube`, the bot
+replies with a one-time Google auth URL, the admin authorizes in their
+browser, and the bot's callback handler encrypts + stores the refresh
+token under that guild.
+
+### First-time bring-up
+
+Full step-by-step from a fresh clone to your first `/generate-highlight`
+is in [**`docs/bring-up-checklist.md`**](docs/bring-up-checklist.md).
+For just the Google side (creating an OAuth client and downloading
+`client_secret.json`), see
+[**`docs/google-oauth-setup.md`**](docs/google-oauth-setup.md).
+
+The condensed version:
+
+```bash
+# 1. Get the Google OAuth client (see docs/google-oauth-setup.md)
+mkdir -p data && mv ~/Downloads/client_secret_*.json data/client_secret.json
+
+# 2. Configure
+cp deploy/.env.example deploy/.env
+# Generate a Fernet master key (stdlib, no project deps required):
+python3 -c 'import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
+# Paste into FERNET_MASTER_KEY in deploy/.env, plus DISCORD_BOT_TOKEN
+# and DISCORD_APPLICATION_ID from your Discord developer-portal app.
+
+# 3. Launch
+cd deploy && docker compose up --build -d
+docker compose logs -f bot   # confirm "logged in as ..."
+
+# 4. Mint the default YouTube refresh token (one-time)
+docker compose exec worker python -m services.worker.youtube_upload --bootstrap-default
+
+# 5. Invite the bot to your Discord server with applications.commands + bot
+#    scopes, then try /generate-highlight 4700552 in any channel.
+```
+
+### Local dev (without docker)
+
+```bash
+pip install -r requirements.txt -r requirements-services.txt
+cp deploy/.env.example .env && $EDITOR .env
+
+# terminal 1
+python -m services.bot
+
+# terminal 2
+python -m services.worker
+```
+
+`services.bot` and `services.worker` share state through `./data/`,
+`./jobs/`, and `./out/` by default (override via env vars).
+
+### Failure handling
+
+- **Render fails** → `jobs/done/<uuid>.json` carries `status: "error",
+  phase: "render"`. Bot posts the error tail to the invocation channel.
+  The `out/<job_id>/` directory is kept on disk for forensics.
+- **Upload fails** → same shape; the MP4 stays at
+  `out/<job_id>/highlight.mp4` for manual retry. No auto-retry in v1.
+- **Bot dies mid-job** → systemd / docker restarts in 5s. The worker
+  keeps running; when the bot comes back it scans `jobs/done/` for
+  fresh entries and delivers any orphans via `channel.send`.
+- **Worker dies mid-job** → on restart, any `jobs/in-progress/*.json`
+  older than 30 min is moved to `done/` as `status: "error", phase:
+  "worker_crash"`.
 
 ## License
 

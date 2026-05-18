@@ -4,7 +4,10 @@ __pycache__/
 .venv/
 venv/
 .env
+deploy/.env
 out/
+data/
+jobs/
 *.mp4
 *.wav
 *.mp3

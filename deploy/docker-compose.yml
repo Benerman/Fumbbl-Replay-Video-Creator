@@ -1,0 +1,35 @@
+services:
+  bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: python -m services.bot
+    env_file: .env
+    environment:
+      OAUTH_CALLBACK_HOST: 0.0.0.0
+    ports:
+      - "38080:38080"   # YouTube OAuth callback (per-guild flow)
+    volumes:
+      - ../data:/app/data
+      - ../jobs:/app/jobs
+    restart: unless-stopped
+    depends_on:
+      - worker
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: python -m services.worker
+    env_file: .env
+    ports:
+      # One-time YouTube OAuth bootstrap (--bootstrap-default) listens
+      # here. Different from the bot's 38080 so both processes can run
+      # simultaneously. Closed in normal operation; only used during
+      # bootstrap.
+      - "38081:38081"
+    volumes:
+      - ../data:/app/data
+      - ../jobs:/app/jobs
+      - ../out:/app/out
+    restart: unless-stopped
