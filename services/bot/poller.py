@@ -99,7 +99,19 @@ class Poller:
             )
 
     async def _deliver(self, job: jobs_mod.Job) -> None:
-        """Final result delivery. Followup + channel.send."""
+        """Final result delivery.
+
+        Primary path: edit the deferred slash-command reply via the
+        interaction webhook. Works without any channel-level Send
+        Messages permission because it goes through Discord's
+        application webhook, not the channel API.
+
+        Fallback path: channel.send. Only triggered when the followup
+        edit fails — e.g., interaction token expired (>15 min), the
+        original message was deleted, or the bot was offline when the
+        job finished. This is the path that needs channel-level Send
+        Messages permission.
+        """
         if job.status == "ok":
             body = (
                 f"<@{job.user_id}> highlight is up! {job.youtube_url}\n"
@@ -115,14 +127,22 @@ class Poller:
                 f"```{(job.message or '').strip()[:1500]}```"
             )
 
-        # Followup (best-effort; expires after 15 min).
+        # Primary delivery: edit the deferred followup.
         if _interaction_still_alive(job):
-            await self._edit_followup_safe(job, body)
+            if await self._edit_followup_safe(job, body):
+                return
+            log.info(
+                "followup edit failed for job %s; falling back to channel.send",
+                job.job_id,
+            )
+        else:
+            log.info(
+                "interaction token expired for job %s; using channel.send",
+                job.job_id,
+            )
 
-        # Channel.send is the durable delivery path. If the followup
-        # edit above succeeded the user has already seen the result, so
-        # a missing-perms 403 here is informational, not an error.
-        # Discord error codes worth knowing:
+        # Fallback only. Discord error codes worth knowing if this
+        # 403s:
         #   50001 = Missing Access (bot can't see the channel — View
         #           Channel denied at the channel/category level even
         #           though the role grants it server-wide)
@@ -133,10 +153,10 @@ class Poller:
                       await self._bot.fetch_channel(job.channel_id)
         except discord.errors.Forbidden as e:
             log.warning(
-                "channel %s not accessible for job %s (code=%s): %s. "
-                "Followup edit already delivered the result. Grant the "
-                "bot 'View Channel' + 'Send Messages' on that specific "
-                "channel (channel-level overrides win over role perms).",
+                "channel %s not accessible for job %s fallback "
+                "(code=%s): %s. User did not receive the result. Grant "
+                "the bot 'View Channel' + 'Send Messages' on that "
+                "channel for restart / >15-min-window delivery.",
                 job.channel_id, job.job_id, getattr(e, "code", "?"), e,
             )
             return
@@ -148,21 +168,24 @@ class Poller:
             await channel.send(body)
         except discord.errors.Forbidden as e:
             log.warning(
-                "channel.send forbidden in channel=%s for job=%s "
-                "(code=%s): %s. Followup edit already delivered the "
-                "result. Grant the bot 'Send Messages' on this specific "
-                "channel — server-wide role perms are layered under "
-                "channel-level overrides.",
+                "channel.send fallback forbidden in channel=%s for "
+                "job=%s (code=%s): %s. User did not receive the result. "
+                "Grant the bot 'Send Messages' on this channel — "
+                "server-wide role perms are layered under channel-level "
+                "overrides.",
                 job.channel_id, job.job_id, getattr(e, "code", "?"), e,
             )
         except Exception:
             log.exception("could not channel.send for job %s", job.job_id)
 
-    async def _edit_followup_safe(self, job: jobs_mod.Job, content: str) -> None:
-        # py-cord exposes followup edits through the webhook endpoint
-        # at `webhooks/{application_id}/{interaction_token}/messages/@original`.
-        # Wrap it through the bot's http client so we don't need to
-        # cache the Interaction object across the queue boundary.
+    async def _edit_followup_safe(self, job: jobs_mod.Job, content: str) -> bool:
+        """Edit the deferred slash-command reply. Returns True on success.
+
+        Uses the webhook endpoint
+        `webhooks/{application_id}/{interaction_token}/messages/@original`
+        so we don't need to cache the Interaction object across the
+        queue boundary.
+        """
         try:
             await self._bot.http.edit_webhook_message(
                 webhook_id=job.application_id,
@@ -170,11 +193,11 @@ class Poller:
                 message_id="@original",
                 payload={"content": content},
             )
+            return True
         except Exception:
-            # Likely the interaction token expired. Not fatal; the
-            # channel.send below is the source of truth.
             log.debug("followup edit failed for job %s (token likely expired)",
                       job.job_id)
+            return False
 
 
 def _phase_text(status: str, phase: str, *, queued: bool) -> str:
