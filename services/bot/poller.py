@@ -122,15 +122,22 @@ class Poller:
         # Channel.send is the durable delivery path. If the followup
         # edit above succeeded the user has already seen the result, so
         # a missing-perms 403 here is informational, not an error.
+        # Discord error codes worth knowing:
+        #   50001 = Missing Access (bot can't see the channel — View
+        #           Channel denied at the channel/category level even
+        #           though the role grants it server-wide)
+        #   50013 = Missing Permissions (bot can see it but can't
+        #           Send Messages — channel-level override denying it)
         try:
             channel = self._bot.get_channel(job.channel_id) or \
                       await self._bot.fetch_channel(job.channel_id)
-        except discord.errors.Forbidden:
+        except discord.errors.Forbidden as e:
             log.warning(
-                "channel %s not accessible for job %s; followup edit already "
-                "delivered the result. Grant the bot 'View Channel' + 'Send "
-                "Messages' there for durable delivery.",
-                job.channel_id, job.job_id,
+                "channel %s not accessible for job %s (code=%s): %s. "
+                "Followup edit already delivered the result. Grant the "
+                "bot 'View Channel' + 'Send Messages' on that specific "
+                "channel (channel-level overrides win over role perms).",
+                job.channel_id, job.job_id, getattr(e, "code", "?"), e,
             )
             return
         except Exception:
@@ -139,13 +146,14 @@ class Poller:
             return
         try:
             await channel.send(body)
-        except discord.errors.Forbidden:
+        except discord.errors.Forbidden as e:
             log.warning(
-                "channel.send forbidden in channel=%s for job=%s; followup "
-                "edit already delivered the result. Grant the bot 'Send "
-                "Messages' in that channel for durable delivery on bot "
-                "restarts or after the 15-min interaction window expires.",
-                job.channel_id, job.job_id,
+                "channel.send forbidden in channel=%s for job=%s "
+                "(code=%s): %s. Followup edit already delivered the "
+                "result. Grant the bot 'Send Messages' on this specific "
+                "channel — server-wide role perms are layered under "
+                "channel-level overrides.",
+                job.channel_id, job.job_id, getattr(e, "code", "?"), e,
             )
         except Exception:
             log.exception("could not channel.send for job %s", job.job_id)
