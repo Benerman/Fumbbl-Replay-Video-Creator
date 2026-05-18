@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS processed_replays (
     replay_id INTEGER NOT NULL DEFAULT -1,
     youtube_video_id TEXT NOT NULL,
     youtube_url TEXT NOT NULL,
+    -- Short upload columns are nullable: a row exists iff the regular
+    -- 16:9 video uploaded successfully, but the 9:16 Short is
+    -- best-effort and may have failed independently.
+    youtube_short_video_id TEXT,
+    youtube_short_url TEXT,
     processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     used_default_yt_creds INTEGER DEFAULT 1,
     PRIMARY KEY (guild_id, match_id, replay_id)
@@ -81,9 +86,29 @@ def get_connection() -> sqlite3.Connection:
         _conn.execute("PRAGMA foreign_keys = ON")
         _conn.execute("PRAGMA journal_mode = WAL")
         _conn.executescript(_SCHEMA)
+        _migrate(_conn)
         _conn.commit()
         log.info("opened sqlite at %s", SQLITE_PATH)
     return _conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent column additions for forward-compatible schema bumps.
+
+    SQLite's ADD COLUMN is non-destructive but errors if the column
+    already exists, so we check pragma_table_info first.
+    """
+    cur = conn.cursor()
+    cols = {row["name"] for row in cur.execute(
+        "SELECT name FROM pragma_table_info('processed_replays')"
+    )}
+    if "youtube_short_video_id" not in cols:
+        cur.execute("ALTER TABLE processed_replays ADD COLUMN youtube_short_video_id TEXT")
+        log.info("migration: added processed_replays.youtube_short_video_id")
+    if "youtube_short_url" not in cols:
+        cur.execute("ALTER TABLE processed_replays ADD COLUMN youtube_short_url TEXT")
+        log.info("migration: added processed_replays.youtube_short_url")
+    cur.close()
 
 
 @contextmanager
@@ -194,19 +219,25 @@ def record_processed(
     youtube_video_id: str,
     youtube_url: str,
     used_default_creds: bool,
+    *,
+    youtube_short_video_id: str | None = None,
+    youtube_short_url: str | None = None,
 ) -> None:
     with cursor() as cur:
         cur.execute(
             """
             INSERT OR REPLACE INTO processed_replays
-                (guild_id, match_id, replay_id, youtube_video_id, youtube_url,
+                (guild_id, match_id, replay_id,
+                 youtube_video_id, youtube_url,
+                 youtube_short_video_id, youtube_short_url,
                  used_default_yt_creds)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (guild_id,
              match_id if match_id is not None else _MID,
              replay_id if replay_id is not None else _MID,
              youtube_video_id, youtube_url,
+             youtube_short_video_id, youtube_short_url,
              1 if used_default_creds else 0),
         )
 

@@ -82,24 +82,55 @@ def _process(job: jobs_mod.Job, path: Path, crypto: TokenCrypto, settings) -> No
         jobs_mod.complete(path, job)
         return
 
-    metadata = build_metadata(result.analysis, job.match_id, job.replay_id)
+    # Regular 16:9 upload first. Failing it fails the whole job — this
+    # is the primary deliverable and what we dedup against.
+    regular_meta = build_metadata(
+        result.analysis, job.match_id, job.replay_id, variant="regular"
+    )
     try:
-        upload = youtube_upload.upload_video(
+        regular_upload = youtube_upload.upload_video(
             creds=creds,
-            mp4_path=result.mp4_path,
-            title=metadata.title,
-            description=metadata.description,
-            tags=metadata.tags,
+            mp4_path=result.regular_mp4,
+            title=regular_meta.title,
+            description=regular_meta.description,
+            tags=regular_meta.tags,
             privacy=settings.youtube_privacy,
             category_id=settings.youtube_category_id,
         )
     except Exception as e:
-        log.exception("upload failed for job=%s", job.job_id)
+        log.exception("regular upload failed for job=%s", job.job_id)
         job.status = "error"
         job.phase = "upload"
         job.message = str(e)[:1500]
         jobs_mod.complete(path, job)
         return
+
+    # Short 9:16 upload is best-effort. If it fails, the job is still
+    # ok — the user got the main video. Capture the failure reason so
+    # we can surface it in the Discord followup.
+    jobs_mod.update(path, phase="upload_short")
+    short_url: str | None = None
+    short_video_id: str | None = None
+    short_error: str | None = None
+    short_meta = build_metadata(
+        result.analysis, job.match_id, job.replay_id, variant="short"
+    )
+    try:
+        short_upload = youtube_upload.upload_video(
+            creds=creds,
+            mp4_path=result.short_mp4,
+            title=short_meta.title,
+            description=short_meta.description,
+            tags=short_meta.tags,
+            privacy=settings.youtube_privacy,
+            category_id=settings.youtube_category_id,
+        )
+        short_url = short_upload.url
+        short_video_id = short_upload.video_id
+    except Exception as e:
+        log.exception("short upload failed for job=%s (regular already uploaded)",
+                      job.job_id)
+        short_error = str(e)[:500]
 
     # ---- dedup record + cleanup ---------------------------------------
     try:
@@ -107,9 +138,11 @@ def _process(job: jobs_mod.Job, path: Path, crypto: TokenCrypto, settings) -> No
             guild_id=job.guild_id,
             match_id=job.match_id,
             replay_id=job.replay_id,
-            youtube_video_id=upload.video_id,
-            youtube_url=upload.url,
+            youtube_video_id=regular_upload.video_id,
+            youtube_url=regular_upload.url,
             used_default_creds=used_default,
+            youtube_short_video_id=short_video_id,
+            youtube_short_url=short_url,
         )
     except Exception:
         log.exception("could not record_processed for job=%s (continuing)", job.job_id)
@@ -124,7 +157,10 @@ def _process(job: jobs_mod.Job, path: Path, crypto: TokenCrypto, settings) -> No
 
     job.status = "ok"
     job.phase = "done"
-    job.youtube_url = upload.url
-    job.youtube_video_id = upload.video_id
+    job.youtube_url = regular_upload.url
+    job.youtube_video_id = regular_upload.video_id
+    job.youtube_short_url = short_url
+    job.youtube_short_video_id = short_video_id
+    job.short_upload_error = short_error
     job.duration_s = round(time.time() - started, 1)
     jobs_mod.complete(path, job)

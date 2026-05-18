@@ -113,13 +113,19 @@ class Poller:
         Messages permission.
         """
         if job.status == "ok":
-            body = (
-                f"<@{job.user_id}> highlight is up! {job.youtube_url}\n"
-                f"Match {job.match_id or '?'} · "
-                f"`{job.match_ref}` · render+upload {job.duration_s:.0f}s"
-                if job.duration_s
-                else f"<@{job.user_id}> highlight is up! {job.youtube_url}"
-            )
+            lines = [f"<@{job.user_id}> highlight is up!"]
+            lines.append(f"📺 16:9: {job.youtube_url}")
+            if job.youtube_short_url:
+                lines.append(f"📱 Short: {job.youtube_short_url}")
+            elif job.short_upload_error:
+                lines.append(
+                    f"⚠️ Short upload failed: `{job.short_upload_error[:200]}`"
+                )
+            footer_bits = [f"Match {job.match_id or '?'}"]
+            if job.duration_s:
+                footer_bits.append(f"render+upload {job.duration_s:.0f}s")
+            lines.append(" · ".join(footer_bits))
+            body = "\n".join(lines)
         else:
             body = (
                 f"<@{job.user_id}> highlight job failed at the "

@@ -42,6 +42,12 @@ class Job:
     message: str = ""
     youtube_url: str | None = None
     youtube_video_id: str | None = None
+    # Second upload: 9:16 Shorts variant. Best-effort — if the regular
+    # upload succeeded but the Short failed, the job is still "ok" and
+    # these stay None. short_upload_error captures the failure reason.
+    youtube_short_url: str | None = None
+    youtube_short_video_id: str | None = None
+    short_upload_error: str | None = None
     duration_s: float | None = None
 
     @classmethod

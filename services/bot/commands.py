@@ -80,10 +80,16 @@ def register(
         # 2. Dedup check.
         existing = db.find_processed(ctx.guild.id, match_id, replay_id)
         if existing is not None:
-            await ctx.respond(
-                f"This match has already been processed: {existing['youtube_url']}",
-                ephemeral=True,
-            )
+            lines = [
+                "This match has already been processed.",
+                f"📺 16:9: {existing['youtube_url']}",
+            ]
+            # `youtube_short_url` is only populated for matches processed
+            # after dual-upload landed; older rows return None here.
+            short_url = existing["youtube_short_url"] if "youtube_short_url" in existing.keys() else None
+            if short_url:
+                lines.append(f"📱 Short: {short_url}")
+            await ctx.respond("\n".join(lines), ephemeral=True)
             return
 
         # 3. Per-guild rate limit.
