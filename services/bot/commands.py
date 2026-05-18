@@ -11,7 +11,15 @@ Two top-level commands:
       per-guild YouTube override.
 """
 
-from __future__ import annotations
+# NB: do NOT add `from __future__ import annotations` to this module.
+# py-cord 2.x inspects each slash-command parameter's annotation
+# (`inspect.signature(func).parameters[...].annotation`) to figure
+# out the Discord option type. With future-style annotations every
+# annotation becomes a STRING (`"str"`) instead of the actual class,
+# and py-cord's `issubclass(annotation, OptionClass)` check raises
+# `TypeError: issubclass() arg 1 must be a class`. Keeping the real
+# class on the annotation makes the bot pick the right option type
+# automatically.
 
 import logging
 from typing import TYPE_CHECKING
@@ -50,6 +58,7 @@ def register(
     )
     @option(
         "match_ref",
+        input_type=str,
         description="FUMBBL match id (e.g. 4700552) or full match/replay URL.",
     )
     async def generate_highlight(ctx: discord.ApplicationContext, match_ref: str) -> None:
