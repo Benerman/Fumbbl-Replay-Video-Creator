@@ -54,11 +54,13 @@ jobs:
           echo "Workspace:     $RUNNER_WORKSPACE"
 
       - name: Run deploy.sh
-        # The deploy clone lives at $FUMBBL_DEPLOY_PATH on the host
-        # (set this on the runner; default below). The script handles
-        # fetch + checkout + docker compose build + up.
+        # Default deploy path is /opt/<repo-name>, derived from the
+        # GitHub repository so renames don't silently break this. The
+        # `vars.DEPLOY_PATH` repo variable overrides if your clone
+        # lives somewhere else (set at: Settings → Secrets and
+        # variables → Actions → Variables).
         env:
-          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/fumbbl-replay' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || format('/opt/{0}', github.event.repository.name) }}
           DEPLOY_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail

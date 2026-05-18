@@ -14,13 +14,13 @@ The deploy workflow only ever runs when you click "Run workflow" in the Actions 
 ### 1. Clone the repo on the host
 
 ```bash
-# Put the canonical deploy clone at /opt/fumbbl-replay.
+# Put the canonical deploy clone at /opt/Fumbbl-Replay-Video-Creator.
 # If you've been deploying from elsewhere, either move it here or
 # set a `DEPLOY_PATH` repository variable in GitHub (see step 3).
-sudo mkdir -p /opt/fumbbl-replay
-sudo chown "$USER:$USER" /opt/fumbbl-replay
-git clone https://github.com/Benerman/Fumbbl-Replay-Video-Creator.git /opt/fumbbl-replay
-cd /opt/fumbbl-replay
+sudo mkdir -p /opt/Fumbbl-Replay-Video-Creator
+sudo chown "$USER:$USER" /opt/Fumbbl-Replay-Video-Creator
+git clone https://github.com/Benerman/Fumbbl-Replay-Video-Creator.git /opt/Fumbbl-Replay-Video-Creator
+cd /opt/Fumbbl-Replay-Video-Creator
 cp deploy/.env.example deploy/.env
 $EDITOR deploy/.env  # paste your secrets
 ```
@@ -53,7 +53,7 @@ The runner now polls GitHub for jobs over outbound HTTPS. No inbound ports are o
 
 ### 3. Optional: configure the deploy path
 
-If your deploy clone lives somewhere other than `/opt/fumbbl-replay`, set a repository variable:
+If your deploy clone lives somewhere other than `/opt/Fumbbl-Replay-Video-Creator`, set a repository variable:
 
 **Settings → Secrets and variables → Actions → Variables → New repository variable**
 
@@ -112,7 +112,7 @@ The deploy script does `git checkout <sha>` so the host ends up on the older cod
 
 ```bash
 ssh you@your-vps
-cd /opt/fumbbl-replay
+cd /opt/Fumbbl-Replay-Video-Creator
 ./deploy/deploy.sh                # deploys main
 ./deploy/deploy.sh v1.1           # deploys a feature branch
 ./deploy/deploy.sh a58faea        # deploys a specific commit
@@ -130,6 +130,6 @@ Same script the workflow calls. Useful if the runner is offline or for emergency
 ## Troubleshooting
 
 - **"No runner found for labels [self-hosted, fumbbl-deploy]"**: the runner is offline, or has the wrong labels. Check **Settings → Actions → Runners** — the runner should be "Idle". Re-register with `./config.sh remove && ./config.sh --labels fumbbl-deploy` to change labels.
-- **"$DEPLOY_PATH is not a git checkout"**: the runner is running as a user without read access to `/opt/fumbbl-replay`, or you set `DEPLOY_PATH` to the wrong location. `ls -la /opt/fumbbl-replay/.git` while su'd to the runner user.
+- **"$DEPLOY_PATH is not a git checkout"**: the runner is running as a user without read access to `/opt/Fumbbl-Replay-Video-Creator`, or you set `DEPLOY_PATH` to the wrong location. `ls -la /opt/Fumbbl-Replay-Video-Creator/.git` while su'd to the runner user.
 - **Containers don't restart after deploy**: `docker compose up -d` only restarts a container if its image/config changed. If you only changed Python source that's copied at build time, the rebuild + up-d will catch it. If you only changed a mounted volume, no restart is needed.
 - **Runner shows "Idle" but workflow stuck on "Queued"**: usually a label mismatch. The workflow says `[self-hosted, fumbbl-deploy]`; the runner must have both labels.
