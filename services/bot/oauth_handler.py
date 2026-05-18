@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 if TYPE_CHECKING:
+    import discord
+
     from services.common.config import Settings
     from services.common.crypto import TokenCrypto
 
@@ -47,12 +49,23 @@ class _Pending:
 class OAuthHandler:
     """Single instance owned by the bot. Holds state map + server."""
 
-    def __init__(self, settings: "Settings", crypto: "TokenCrypto") -> None:
+    def __init__(
+        self,
+        settings: "Settings",
+        crypto: "TokenCrypto",
+        bot: "discord.Bot | None" = None,
+    ) -> None:
         self._settings = settings
         self._crypto = crypto
+        # Optional so the handler can be constructed before the bot is
+        # ready (start order in __main__.py). Set via attach_bot().
+        self._bot: "discord.Bot | None" = bot
         self._pending: dict[str, _Pending] = {}
         self._runner: web.AppRunner | None = None
         self._lock = asyncio.Lock()
+
+    def attach_bot(self, bot: "discord.Bot") -> None:
+        self._bot = bot
 
     def begin(self, guild_id: int, user_id: int) -> tuple[str, str]:
         """Returns (state, auth_url) for a fresh OAuth flow."""
@@ -141,11 +154,45 @@ class OAuthHandler:
         )
         log.info("stored encrypted YT creds for guild=%s channel=%s",
                  pending.guild_id, channel_id)
+
+        # Notify the admin via DM. The OAuth landing tab is a great
+        # browser confirmation, but the user is mentally back in Discord
+        # by the time they close it — without this nudge it's not
+        # obvious the bot has actually stored the credentials.
+        asyncio.create_task(
+            self._notify_user(pending.user_id, pending.guild_id, channel_id)
+        )
+
         return web.Response(
             text="YouTube channel linked successfully. You can close this tab "
                   "and return to Discord.",
             content_type="text/plain",
         )
+
+    async def _notify_user(
+        self, user_id: int, guild_id: int, channel_id: str | None
+    ) -> None:
+        if self._bot is None:
+            return
+        try:
+            user = self._bot.get_user(user_id) or await self._bot.fetch_user(user_id)
+        except Exception:
+            log.exception("could not fetch user=%s to confirm YT link", user_id)
+            return
+        body = (
+            "✅ YouTube channel linked for this server."
+            + (f" Channel id: `{channel_id}`." if channel_id else "")
+            + " You can now use `/generate-highlight` and uploads will go to "
+              "this channel."
+        )
+        try:
+            await user.send(body)
+        except Exception:
+            # DMs may be closed; not fatal — the browser tab already showed success.
+            log.warning(
+                "could not DM user=%s confirming YT link for guild=%s",
+                user_id, guild_id,
+            )
 
     async def _exchange_code(self, code: str) -> tuple[str, str | None]:
         """Code -> refresh_token + channel_id."""

@@ -95,6 +95,7 @@ def main() -> None:
         await ctx.respond("pong 🏓", ephemeral=True)
 
     poller = Poller(bot, in_flight)
+    oauth.attach_bot(bot)
 
     @bot.event
     async def on_ready() -> None:

@@ -119,16 +119,34 @@ class Poller:
         if _interaction_still_alive(job):
             await self._edit_followup_safe(job, body)
 
-        # Channel.send is the durable delivery path.
+        # Channel.send is the durable delivery path. If the followup
+        # edit above succeeded the user has already seen the result, so
+        # a missing-perms 403 here is informational, not an error.
         try:
             channel = self._bot.get_channel(job.channel_id) or \
                       await self._bot.fetch_channel(job.channel_id)
+        except discord.errors.Forbidden:
+            log.warning(
+                "channel %s not accessible for job %s; followup edit already "
+                "delivered the result. Grant the bot 'View Channel' + 'Send "
+                "Messages' there for durable delivery.",
+                job.channel_id, job.job_id,
+            )
+            return
         except Exception:
             log.exception("could not fetch channel %s for job %s",
                           job.channel_id, job.job_id)
             return
         try:
             await channel.send(body)
+        except discord.errors.Forbidden:
+            log.warning(
+                "channel.send forbidden in channel=%s for job=%s; followup "
+                "edit already delivered the result. Grant the bot 'Send "
+                "Messages' in that channel for durable delivery on bot "
+                "restarts or after the 15-min interaction window expires.",
+                job.channel_id, job.job_id,
+            )
         except Exception:
             log.exception("could not channel.send for job %s", job.job_id)
 

@@ -58,10 +58,15 @@ def render_match(match_ref: str, work_dir: Path) -> RenderResult:
     except SystemExit as e:
         rc = int(e.code) if isinstance(e.code, int) else 1
 
-    if rc != 0 or not mp4_path.exists():
+    # fumbbl_replay.main() doesn't always reach `return 0` — it falls
+    # through on success and Python returns None. Treat None as success
+    # and use the MP4 existing on disk as the real source of truth.
+    rendered_ok = (rc in (None, 0)) and mp4_path.exists()
+    if not rendered_ok:
         err_tail = err_buf.getvalue().strip().splitlines()[-50:]
         raise RuntimeError(
-            "fumbbl_replay render failed (rc=" + str(rc) + ").\n"
+            f"fumbbl_replay render failed (rc={rc}, "
+            f"mp4_exists={mp4_path.exists()}).\n"
             + "\n".join(err_tail)
         )
 

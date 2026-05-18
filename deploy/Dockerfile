@@ -34,9 +34,15 @@ COPY services /app/services
 
 # Default env. Override these in the compose env_file. The volumes
 # mounted from the host (data, jobs, out) live under /app.
+# FUMBBL_REPLAY_CACHE points inside /app/data so FUMBBL position
+# icons, pitch backgrounds, dice sprites, FFB SFX, and kokoro TTS
+# models survive container restarts — otherwise every cold start
+# re-downloads ~50+ MB of static assets.
 ENV JOBS_ROOT=/app/jobs \
     OUT_ROOT=/app/out \
-    DATA_ROOT=/app/data
+    DATA_ROOT=/app/data \
+    FUMBBL_REPLAY_CACHE=/app/data/cache \
+    FUMBBL_KOKORO_CACHE=/app/data/cache/kokoro
 
 # Each compose service overrides this `command:` with either
 # `python -m services.bot` or `python -m services.worker`.

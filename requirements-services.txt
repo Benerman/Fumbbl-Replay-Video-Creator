@@ -8,3 +8,10 @@ google-api-python-client>=2.140
 google-auth-oauthlib>=1.2
 google-auth-httplib2>=0.2
 cryptography>=42.0
+
+# Kokoro neural TTS (local, offline). The worker calls
+# fumbbl_replay.tts which lazy-imports these — without them the
+# render falls back to "no commentary audio" which is much weaker
+# than what the bot is meant to produce.
+kokoro-onnx>=0.4
+soundfile>=0.12
