@@ -22,6 +22,12 @@ services:
       dockerfile: deploy/Dockerfile
     command: python -m services.worker
     env_file: .env
+    ports:
+      # One-time YouTube OAuth bootstrap (--bootstrap-default) listens
+      # here. Different from the bot's 38080 so both processes can run
+      # simultaneously. Closed in normal operation; only used during
+      # bootstrap.
+      - "38081:38081"
     volumes:
       - ../data:/app/data
       - ../jobs:/app/jobs

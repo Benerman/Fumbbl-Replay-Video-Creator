@@ -144,19 +144,49 @@ def upload_video(
 
 def _bootstrap_default() -> int:
     """Interactive OAuth flow to mint a refresh token for the bot operator's
-    default YouTube channel. Encrypts + writes it to bot_defaults."""
+    default YouTube channel. Encrypts + writes it to bot_defaults.
+
+    Designed to work both on bare-metal hosts (browser opens
+    automatically) AND inside a docker container (no browser; the user
+    is told to open the URL manually). The callback listener binds to
+    0.0.0.0 inside the container so the host's localhost:38081 port
+    forward reaches it; the redirect URI advertised to Google stays
+    on "localhost" so the redirect lands on the browser's own machine.
+    """
     settings = load_settings()
     crypto = TokenCrypto(settings.fernet_master_key)
     flow = InstalledAppFlow.from_client_secrets_file(
         str(settings.youtube_client_secrets_json), scopes=YT_SCOPES
     )
-    print("A browser window will open for you to authorize YouTube upload "
-          "on the bot operator's default channel.")
-    creds = flow.run_local_server(
-        host=settings.oauth_callback_host,
-        port=settings.oauth_callback_port + 1,   # avoid clashing with bot
-        open_browser=True,
+    bootstrap_port = settings.oauth_callback_port + 1   # avoid clashing with bot
+    print(
+        f"\nOpen this URL in your browser to authorize YouTube uploads:\n"
+        f"  → (URL will print below once the local listener is up)\n"
+        f"\nIf this is running inside docker, make sure the host port "
+        f"{bootstrap_port} is forwarded to the container — it is by "
+        f"default in deploy/docker-compose.yml.\n"
     )
+    try:
+        creds = flow.run_local_server(
+            host="localhost",            # what we advertise as the redirect URI
+            bind_addr="0.0.0.0",         # what we actually listen on
+            port=bootstrap_port,
+            open_browser=False,          # no browser in containers; the user opens manually
+            authorization_prompt_message="Please open this URL in your browser to authorize:\n  {url}",
+            success_message=(
+                "Authorization complete. You can close this tab and "
+                "return to the terminal."
+            ),
+        )
+    except OSError as e:
+        print(
+            f"\nERROR: could not bind to port {bootstrap_port}. "
+            "Stop anything else using it (lsof -i :"
+            f"{bootstrap_port}) or set OAUTH_CALLBACK_PORT in your "
+            ".env to choose a different base port.\n"
+            f"Underlying error: {e}"
+        )
+        return 1
     if not creds.refresh_token:
         print("ERROR: Google did not return a refresh token. Try "
               "revoking the bot's access at "

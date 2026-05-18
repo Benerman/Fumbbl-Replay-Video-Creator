@@ -144,20 +144,27 @@ unless a guild admin runs `/highlight-config set-youtube`.
       ```bash
       docker compose exec worker python -m services.worker.youtube_upload --bootstrap-default
       ```
-- [ ] Follow the printed URL in a browser **on the same machine**
-      (it binds to `OAUTH_CALLBACK_HOST=127.0.0.1` by default). If
-      you're SSH'd into a remote host, either:
-      - Forward the port: `ssh -L 38081:127.0.0.1:38081 user@host`
-        then run the bootstrap in the SSH session; OR
-      - Set `OAUTH_CALLBACK_HOST=0.0.0.0` in `deploy/.env` and
-        open the printed URL on your remote host (less secure;
-        revert after bootstrap).
+      Inside the container there's no browser, so the script
+      doesn't try to open one. It prints a `https://accounts.google.com/...`
+      URL — open that in **your own browser** (on the host machine
+      running docker). The redirect lands on `http://localhost:38081/`
+      which docker-compose forwards into the worker container (port
+      `38081:38081` is exposed by `deploy/docker-compose.yml`).
+- [ ] If you're SSH'd into a remote host without a local browser,
+      forward the port first:
+      ```bash
+      ssh -L 38081:localhost:38081 user@host
+      ```
+      Then run the bootstrap in the SSH session and open the URL
+      in your laptop's browser.
 - [ ] Sign in with the **brand account** for the YouTube channel
       where you want videos uploaded. Click through "Access
-      blocked → Advanced → Go to (unsafe)" if you see it.
-- [ ] You should see `Saved default credentials. Channel id: UC...`
-      in the worker's log. The encrypted refresh token is now in
-      `data/app.sqlite3.bot_defaults`.
+      blocked → Advanced → Go to (unsafe)" if you see it (you
+      added yourself as a Test User in step 1).
+- [ ] The browser shows "Authorization complete. You can close
+      this tab and return to the terminal." Back in the terminal,
+      `Saved default credentials. Channel id: UC...` confirms the
+      encrypted refresh token landed in `bot_defaults`.
 
 Sanity check:
 ```bash
