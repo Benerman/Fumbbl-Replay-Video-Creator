@@ -87,8 +87,11 @@ class OAuthHandler:
         return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
 
     def _redirect_uri(self) -> str:
+        # MUST use the redirect_host (localhost/127.0.0.1), not the
+        # bind host. Google rejects 0.0.0.0 as a redirect URI even for
+        # Desktop OAuth clients — error 400 invalid_request.
         return (
-            f"http://{self._settings.oauth_callback_host}:"
+            f"http://{self._settings.oauth_redirect_host}:"
             f"{self._settings.oauth_callback_port}/oauth/callback"
         )
 

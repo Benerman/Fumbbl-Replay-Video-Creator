@@ -33,8 +33,14 @@ class Settings:
     # Rate limit
     rate_limit_per_guild_per_10min: int
 
-    # OAuth callback (bot)
-    oauth_callback_host: str        # 0.0.0.0 in docker, 127.0.0.1 locally
+    # OAuth callback (bot). Two hosts because Google rejects 0.0.0.0
+    # as a redirect URI but we need the container to bind there to
+    # accept the docker port-forwarded connection from the host's
+    # browser. The redirect_host is what we advertise to Google
+    # (always "localhost" or "127.0.0.1" for Desktop OAuth clients);
+    # the bind_host is what aiohttp listens on internally.
+    oauth_callback_host: str        # bind address: 0.0.0.0 in docker, 127.0.0.1 bare-metal
+    oauth_redirect_host: str        # advertised in the redirect_uri to Google
     oauth_callback_port: int
 
     @property
@@ -85,5 +91,6 @@ def load_settings() -> Settings:
             os.environ.get("RATE_LIMIT_PER_GUILD_PER_10MIN", "3")
         ),
         oauth_callback_host=os.environ.get("OAUTH_CALLBACK_HOST", "127.0.0.1"),
+        oauth_redirect_host=os.environ.get("OAUTH_REDIRECT_HOST", "localhost"),
         oauth_callback_port=int(os.environ.get("OAUTH_CALLBACK_PORT", "38080")),
     )
