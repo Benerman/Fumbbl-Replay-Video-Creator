@@ -194,20 +194,33 @@ def find_processed(
     match_id: int | None,
     replay_id: int | None,
 ) -> sqlite3.Row | None:
-    """Look up an existing successful upload for this guild + ref."""
-    if match_id is None and replay_id is None:
+    """Look up an existing successful upload for this guild + ref.
+
+    Only matches on an id that was actually provided. The `_MID` (-1)
+    sentinel must never appear in the WHERE clause: every row stores -1
+    for the id it lacks, so matching `replay_id = -1` (or `match_id = -1`)
+    would collide with unrelated matches and return the wrong video.
+    """
+    conditions: list[str] = []
+    params: list[int] = [guild_id]
+    if match_id is not None:
+        conditions.append("match_id = ?")
+        params.append(match_id)
+    if replay_id is not None:
+        conditions.append("replay_id = ?")
+        params.append(replay_id)
+    if not conditions:
         return None
     with cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT * FROM processed_replays
             WHERE guild_id = ?
-              AND (match_id = ? OR replay_id = ?)
+              AND ({" OR ".join(conditions)})
             ORDER BY processed_at DESC
             LIMIT 1
             """,
-            (guild_id, match_id if match_id is not None else _MID,
-             replay_id if replay_id is not None else _MID),
+            params,
         )
         return cur.fetchone()
 
