@@ -66,7 +66,10 @@ def _process(job: jobs_mod.Job, path: Path, crypto: TokenCrypto, settings) -> No
         return
 
     # ---- credentials + upload -----------------------------------------
-    log.info("uploading job=%s mp4=%s", job.job_id, result.mp4_path)
+    log.info(
+        "uploading job=%s regular=%s short=%s",
+        job.job_id, result.regular_mp4, result.short_mp4,
+    )
     job.status = "uploading"
     job.phase = "upload"
     jobs_mod.update(path, status="uploading", phase="upload")

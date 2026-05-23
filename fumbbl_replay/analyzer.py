@@ -96,8 +96,10 @@ class PivotalPlay:
     half: int | None = None
     turn: int | None = None
     command_nr: int | None = None    # gameLog command number, for field reconstruction
-    score_home: int | None = None
+    score_home: int | None = None       # AFTER this event
     score_away: int | None = None
+    score_home_before: int | None = None  # BEFORE this event; equals score_home for non-TDs
+    score_away_before: int | None = None
     player_id: str | None = None
     player_name: str | None = None
     inflicter_id: str | None = None
@@ -243,7 +245,7 @@ def analyze(
         pivotal = _pivotal_from_summary(home, away)
         has_event_log = False
 
-    pivotal.sort(key=lambda p: (-p.weight, p.half or 0, p.turn or 0, p.team_name))
+    pivotal.sort(key=_match_order_key)
 
     if home.score > away.score:
         winner = home.name
@@ -336,6 +338,7 @@ def _pivotal_from_events(
                 half=e.half or None, turn=e.turn or None,
                 command_nr=e.command_nr,
                 score_home=e.score_home, score_away=e.score_away,
+                score_home_before=pre_home, score_away_before=pre_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
                 was_blitz=e.was_blitz,
@@ -350,6 +353,7 @@ def _pivotal_from_events(
                 half=e.half or None, turn=e.turn or None,
                 command_nr=e.command_nr,
                 score_home=e.score_home, score_away=e.score_away,
+                score_home_before=e.score_home, score_away_before=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
                 was_blitz=e.was_blitz,
@@ -374,6 +378,7 @@ def _pivotal_from_events(
                 half=e.half or None, turn=e.turn or None,
                 command_nr=e.command_nr,
                 score_home=e.score_home, score_away=e.score_away,
+                score_home_before=e.score_home, score_away_before=e.score_away,
                 player_id=e.player_id,
                 player_name=resolve_name(team, e.player_id),
                 inflicter_id=e.inflicter_id,
@@ -411,6 +416,22 @@ def _side_of(p: PivotalPlay, home: TeamInfo) -> str:
     return "home" if p.team_id == home.id else "away"
 
 
+def _match_order_key(p: PivotalPlay) -> tuple:
+    # Natural match order: half -> turn -> command_nr. Within a single
+    # command, non-scoring events (casualties / blunders the play
+    # caused on its way to the endzone) come before the touchdown so
+    # the score-update clip lands last and the running score reads
+    # cleanly across the reel.
+    kind_rank = 1 if p.kind == "touchdown" else 0
+    return (
+        p.half or 0,
+        p.turn or 0,
+        p.command_nr or 0,
+        kind_rank,
+        p.team_name,
+    )
+
+
 def _blunder_play(e: Event, team: TeamInfo, opp: TeamInfo, resolve_name) -> PivotalPlay:
     base = {
         "self_kill": _BASE_SELF_KILL_WEIGHT,
@@ -425,6 +446,7 @@ def _blunder_play(e: Event, team: TeamInfo, opp: TeamInfo, resolve_name) -> Pivo
         half=e.half or None, turn=e.turn or None,
         command_nr=e.command_nr,
         score_home=e.score_home, score_away=e.score_away,
+        score_home_before=e.score_home, score_away_before=e.score_away,
         player_id=e.player_id,
         player_name=resolve_name(team, e.player_id),
         injury_label=e.detail if e.kind == "self_kill" else None,
@@ -535,7 +557,7 @@ def format_report(a: MatchAnalysis, *, commentary: dict[int, str] | None = None)
 
     lines.append("")
     src = "replay event log" if a.has_event_log else "summary totals"
-    lines.append(f"  Pivotal plays ({len(a.pivotal)}, from {src}):")
+    lines.append(f"  Pivotal plays ({len(a.pivotal)}, in match order, from {src}):")
     if not a.pivotal:
         lines.append("    (no scoring or casualties recorded)")
     for i, p in enumerate(a.pivotal, 1):

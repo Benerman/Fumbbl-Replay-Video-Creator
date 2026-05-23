@@ -797,11 +797,16 @@ def _draw_header(draw: ImageDraw.ImageDraw, lay: Layout, play: PivotalPlay,
     / weather) each wrap to the canvas width, so long team names or
     weather labels stack onto new lines instead of running off the edge
     of the narrow vertical canvas. Lines are ellipsised as a last resort
-    if a single unbreakable token is still too wide."""
+    if a single unbreakable token is still too wide.
+
+    The score chunk comes from _score_chunk, so touchdowns show the
+    running change ("0-1 -> 1-1") in the clip the TD lands in while every
+    other play shows the current score."""
     matchup = f"{play.team_name} vs {play.against_team}"
     meta_bits: list[str] = []
-    if play.score_home is not None and play.score_away is not None:
-        meta_bits.append(f"{play.score_home}-{play.score_away}")
+    score_chunk = _score_chunk(play)
+    if score_chunk:
+        meta_bits.append(score_chunk.strip())
     if play.half:
         meta_bits.append(f"half {play.half}")
     if play.turn:
@@ -817,6 +822,27 @@ def _draw_header(draw: ImageDraw.ImageDraw, lay: Layout, play: PivotalPlay,
     for ln in lines:
         draw.text((lay.ox, y), _ellipsize(draw, ln, font, max_w), fill=TEXT, font=font)
         y += 30
+
+
+def _score_chunk(p: PivotalPlay) -> str | None:
+    """Score string for the tableau header.
+
+    For TDs we show the running score CHANGE ("0-1 -> 1-1") so the
+    update is visible in the same clip the TD lands in. For everything
+    else we show the current score so the reel keeps reading naturally
+    in chronological order.
+    """
+    if p.score_home is None or p.score_away is None:
+        return None
+    cur = f"{p.score_home}-{p.score_away}"
+    if (p.kind == "touchdown"
+            and p.score_home_before is not None
+            and p.score_away_before is not None
+            and (p.score_home_before, p.score_away_before)
+            != (p.score_home, p.score_away)):
+        prev = f"{p.score_home_before}-{p.score_away_before}"
+        return f"  {prev} -> {cur}"
+    return f"  {cur}"
 
 
 def _dim(im: Image.Image) -> Image.Image:
