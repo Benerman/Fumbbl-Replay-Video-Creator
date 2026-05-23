@@ -1,0 +1,112 @@
+# Verification CI. Runs on every push and pull request, on
+# GitHub-hosted runners. Never touches the production host.
+#
+# Purpose: prove that what's on a branch is at least syntactically
+# valid, importable, and builds into a working docker image BEFORE it
+# ships. The deploy workflow (deploy.yml) is the only path that touches
+# the VPS; it triggers automatically once THIS workflow passes on `main`
+# (via workflow_run), and can also be run manually for rollbacks. So a
+# green run here on `main` is what actually authorises a deploy.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel in-progress runs of the same ref so feature-branch pushes
+  # don't queue up behind older runs of themselves.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-checks:
+    name: Python syntax + imports
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-services.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-services.txt
+
+      - name: Compile-check all modules
+        run: |
+          python -m compileall -q services fumbbl_replay
+
+      - name: Import smoke test
+        # All service modules must import without side effects so that
+        # bot/worker startup is the FIRST place real env-var reads
+        # can fail — never a surprise at import time.
+        env:
+          FERNET_MASTER_KEY: ""
+          DISCORD_BOT_TOKEN: ""
+          DISCORD_APPLICATION_ID: "0"
+        run: |
+          python - <<'PY'
+          import importlib, sys
+          modules = [
+              "services.bot.commands",
+              "services.bot.poller",
+              "services.bot.oauth_handler",
+              "services.bot.sanitizer",
+              "services.common.config",
+              "services.common.crypto",
+              "services.common.db",
+              "services.common.jobs",
+              "services.common.logging",
+              "services.common.paths",
+              "services.common.rate_limit",
+              "services.worker.aspect",
+              "services.worker.loop",
+              "services.worker.metadata",
+              "services.worker.render",
+              "services.worker.youtube_upload",
+              "services.worker.youtube_reconcile",
+          ]
+          failed = []
+          for name in modules:
+              try:
+                  importlib.import_module(name)
+                  print(f"  ok  {name}")
+              except Exception as e:
+                  failed.append((name, e))
+                  print(f"  FAIL {name}: {e}", file=sys.stderr)
+          sys.exit(1 if failed else 0)
+          PY
+
+  docker-build:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        # Layer cache is keyed on the Dockerfile + requirements; cuts
+        # repeat-build times from ~6m to ~30s when nothing has changed.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          tags: fumbbl-replay:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -31,7 +31,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .analyzer import MatchAnalysis, TeamInfo
 from .events import PlayerInfo
 from .tableau import (
-    _font, _text_size,
+    _font, _text_size, canvas_size,
     HOME_COLOR, AWAY_COLOR, TEXT, DIM_TEXT, HIGHLIGHT,
     Layout,
 )
@@ -104,11 +104,10 @@ def _bg_canvas(orientation: str) -> tuple[Image.Image, ImageDraw.ImageDraw, int,
     """Black canvas at the same dimensions as the tableau for this
     orientation. We don't need a full Layout — slides are static, not
     pitch-aligned."""
-    # Match the tableau dimensions so the slide concats cleanly.
-    if orientation == "vertical":
-        w, h = 960, 1804
-    else:
-        w, h = 1576, 1252
+    # Match the tableau dimensions exactly so the slide concats cleanly
+    # (compose.py uses the ffmpeg concat filter, which needs identical
+    # dimensions across every clip).
+    w, h = canvas_size(orientation)
     img = Image.new("RGBA", (w, h), (10, 14, 18, 255))
     draw = ImageDraw.Draw(img)
     return img, draw, w, h

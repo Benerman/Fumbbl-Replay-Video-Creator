@@ -54,8 +54,30 @@ _MARKER_WIDTH = 3
 # Margins around the pitch. MARGIN_X needs to fit two-digit coord labels
 # (numbers 1-12 down each side / along each edge). Scales with TILE.
 MARGIN_X = 60
-MARGIN_TOP = 100
-CAPTION_H = 248  # caption + stats line(s) + dugout-status strip
+
+
+def _margin_top(orientation: str) -> int:
+    """Header band above the pitch. Vertical canvases are narrow (960px)
+    so the match-description header often wraps to 2-3 lines; give it
+    more room than the wide horizontal canvas needs."""
+    return 140 if orientation == "vertical" else 100
+
+
+def _caption_h(orientation: str) -> int:
+    """Bottom band: wrapped caption + per-player stats/skills lines +
+    dugout-status strip. Vertical is taller because skills wrap (rather
+    than truncate) and a casualty shows two players' skill lists."""
+    return 370 if orientation == "vertical" else 248
+
+
+def canvas_size(orientation: str) -> tuple[int, int]:
+    """(width, height) of the rendered canvas for an orientation.
+
+    The intro/outro slides must match these exactly — compose.py stitches
+    every clip with the ffmpeg concat *filter*, which requires identical
+    dimensions across all inputs."""
+    lay = _layout(orientation)
+    return lay.img_w, lay.img_h
 # Field colours.
 PITCH_GREEN = (40, 90, 50)
 PITCH_LINE = (200, 220, 200)
@@ -121,18 +143,20 @@ _COORD_BAND = 32  # px reserved above/below the pitch for row labels (horizontal
 
 
 def _layout(orientation: str) -> Layout:
+    mt = _margin_top(orientation)
+    ch = _caption_h(orientation)
     if orientation == "vertical":
         cols, rows = PITCH_HEIGHT, PITCH_WIDTH       # 15 × 26
-        oy = MARGIN_TOP
+        oy = mt
         extra_h = 0
     else:
         cols, rows = PITCH_WIDTH, PITCH_HEIGHT       # 26 × 15
-        oy = MARGIN_TOP + _COORD_BAND                # leave room for labels above the pitch
+        oy = mt + _COORD_BAND                        # leave room for labels above the pitch
         extra_h = 2 * _COORD_BAND                    # and below
     pitch_w = cols * TILE
     pitch_h = rows * TILE
     img_w = pitch_w + 2 * MARGIN_X
-    img_h = pitch_h + MARGIN_TOP + CAPTION_H + extra_h
+    img_h = pitch_h + mt + ch + extra_h
     return Layout(orientation, cols, rows, pitch_w, pitch_h,
                    MARGIN_X, oy, img_w, img_h)
 
@@ -185,8 +209,9 @@ def render_tableau(
     _draw_endzone_labels(img, draw, lay, home_name, away_name, endzone_font)
     # Layer 3b: row coordinate labels along the long-axis sides of the pitch.
     _draw_coord_labels(img, lay, _font(22))
-    # Layer 4: header bar above the pitch.
-    draw.text((lay.ox, 28), _header_text(play, weather=weather), fill=TEXT, font=font)
+    # Layer 4: header bar above the pitch (wrapped so long team names /
+    # weather strings don't run off the narrow vertical canvas).
+    _draw_header(draw, lay, play, weather, font)
     # Layer 5: players + their state markers + the highlight ring.
     _draw_players(img, draw, lay, state, player_lookup, sprites, targets, tiny, small)
     # Layer 6: ball — drawn AFTER players so the held-ball overlay
@@ -201,7 +226,10 @@ def render_tableau(
     if play.was_blitz and play.blitz_target_id and blitz_active:
         _draw_blitz_badge(img, draw, lay, state, play.blitz_target_id)
     # Layer 7: dice rolls that produced this play, positioned over the actor.
+    # The action log is drawn first so the dice icons sit on top of it if
+    # the actor happens to be under the panel.
     if dice:
+        _draw_action_log(img, draw, lay, dice, player_lookup, small)
         _draw_dice(img, lay, state, dice, targets, tiny)
     # Layer 8: caption strip + per-player stats line(s) + dugout status.
     next_y = _draw_caption(draw, lay, play, state, font, small)
@@ -489,18 +517,15 @@ def _draw_stats_lines(
         if info.passing is not None:  bits.append(f"PA{info.passing}+")
         if info.armour is not None:   bits.append(f"AV{info.armour}+")
         stats = " ".join(bits)
-        skill_list = list(info.skills)
-        skills = ", ".join(skill_list) if skill_list else "—"
         prefix = f"#{info.number or '-':<2} {info.name}  •  {stats}  •  "
-        line = prefix + skills
-        # Trim skills from the tail one by one until the line fits.
+        # Wrap the skill list across as many lines as it needs (capped)
+        # instead of dropping skills off the tail — long-skill players
+        # were getting their skill list silently clipped on the narrow
+        # vertical canvas.
         max_w = lay.img_w - 2 * lay.ox
-        while skill_list and _text_size(draw, line, font)[0] > max_w:
-            skill_list.pop()
-            skills = (", ".join(skill_list) + ", …") if skill_list else "…"
-            line = prefix + skills
-        draw.text((lay.ox, y), line, fill=color, font=font)
-        y += line_h
+        for ln in _wrap_skills(draw, prefix, list(info.skills), font, max_w, max_lines=3):
+            draw.text((lay.ox, y), ln, fill=color, font=font)
+            y += line_h
 
 
 def _draw_dugout_strip(
@@ -520,9 +545,9 @@ def _draw_dugout_strip(
     abbrev = lambda n: (n[:14] + "…") if n and len(n) > 15 else (n or "")
     line_h = 24
     # Caption uses ~72 px, stats lines take 0-2 lines (24 px each).
-    # Anchor the dugout strip near the BOTTOM of CAPTION_H so we don't
-    # need to know how many stats lines were drawn above.
-    y = lay.oy + lay.pitch_h + CAPTION_H - 2 * line_h - 12
+    # Anchor the dugout strip near the BOTTOM of the caption band so we
+    # don't need to know how many stats lines were drawn above.
+    y = lay.oy + lay.pitch_h + _caption_h(lay.orientation) - 2 * line_h - 12
     cats = ("res", "ko", "bh", "si", "rip", "ban")
     for side, color, name in (("home", HOME_COLOR, abbrev(home_name)),
                                 ("away", AWAY_COLOR, abbrev(away_name))):
@@ -641,6 +666,21 @@ def _draw_endzone_labels(
         _draw_label_in_box(img, draw, away_name, *away_box, AWAY_COLOR, font, rotate=rotate)
 
 
+def _fit_label(draw, text: str, font, max_len: int, *, min_size: int = 18):
+    """Shrink `font` (then ellipsise as a last resort) until `text` fits
+    `max_len` px. Returns the possibly-smaller font and trimmed text so
+    long team names don't run off the endzone band."""
+    size = getattr(font, "size", None)
+    if size is None:                       # bitmap fallback font: can't resize
+        return font, _ellipsize(draw, text, font, max_len)
+    while size > min_size and _text_size(draw, text, font)[0] > max_len:
+        size -= 2
+        font = _font(size)
+    if _text_size(draw, text, font)[0] > max_len:
+        text = _ellipsize(draw, text, font, max_len)
+    return font, text
+
+
 def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bool):
     """Render text in a box on an opaque dark strip so it pops against
     any pitch texture. Rotate 90° if the box is taller than it is wide."""
@@ -650,9 +690,13 @@ def _draw_label_in_box(img, draw, text, ox, oy, w, h, color, font, *, rotate: bo
     img.alpha_composite(backing, (ox, oy))
 
     if not rotate:
+        # The text runs along the box width, so fit it to w.
+        font, text = _fit_label(draw, text, font, w - 8)
         tw, th = _text_size(draw, text, font)
         draw.text((ox + (w - tw) // 2, oy + (h - th) // 2), text, fill=color, font=font)
         return
+    # Rotated: the text runs along the box height, so fit it to h.
+    font, text = _fit_label(draw, text, font, h - 8)
     tw, th = _text_size(draw, text, font)
     tmp = Image.new("RGBA", (tw + 4, th + 4), (0, 0, 0, 0))
     ImageDraw.Draw(tmp).text((2, 2), text, fill=color, font=font)
@@ -745,18 +789,39 @@ def _paste_centered_logo(canvas: Image.Image, logo: Image.Image,
     canvas.paste(logo_resized, (cx - new_size[0] // 2, cy - new_size[1] // 2), logo_resized)
 
 
-def _header_text(p: PivotalPlay, *, weather: str | None = None) -> str:
-    bits = [p.team_name, "vs", p.against_team]
-    score_chunk = _score_chunk(p)
+def _draw_header(draw: ImageDraw.ImageDraw, lay: Layout, play: PivotalPlay,
+                 weather: str | None, font) -> None:
+    """Wrapped match-description header above the pitch.
+
+    The matchup ("Home vs Away") and the meta strip (score / half / turn
+    / weather) each wrap to the canvas width, so long team names or
+    weather labels stack onto new lines instead of running off the edge
+    of the narrow vertical canvas. Lines are ellipsised as a last resort
+    if a single unbreakable token is still too wide.
+
+    The score chunk comes from _score_chunk, so touchdowns show the
+    running change ("0-1 -> 1-1") in the clip the TD lands in while every
+    other play shows the current score."""
+    matchup = f"{play.team_name} vs {play.against_team}"
+    meta_bits: list[str] = []
+    score_chunk = _score_chunk(play)
     if score_chunk:
-        bits.append(score_chunk)
-    if p.half:
-        bits.append(f"  half {p.half}")
-    if p.turn:
-        bits.append(f"  turn {p.turn}")
+        meta_bits.append(score_chunk.strip())
+    if play.half:
+        meta_bits.append(f"half {play.half}")
+    if play.turn:
+        meta_bits.append(f"turn {play.turn}")
     if weather:
-        bits.append(f"  •  {weather}")
-    return " ".join(bits)
+        meta_bits.append(weather)
+
+    max_w = lay.img_w - 2 * lay.ox
+    lines = _wrap_text(draw, matchup, font, max_w)
+    if meta_bits:
+        lines += _wrap_text(draw, "  •  ".join(meta_bits), font, max_w)
+    y = 16
+    for ln in lines:
+        draw.text((lay.ox, y), _ellipsize(draw, ln, font, max_w), fill=TEXT, font=font)
+        y += 30
 
 
 def _score_chunk(p: PivotalPlay) -> str | None:
@@ -809,6 +874,119 @@ def _wrap_text(draw, text: str, font, max_width: int) -> list[str]:
     if cur:
         lines.append(cur)
     return lines
+
+
+def _ellipsize(draw, text: str, font, max_w: int) -> str:
+    """Trim `text` with a trailing ellipsis until it fits `max_w`."""
+    if _text_size(draw, text, font)[0] <= max_w:
+        return text
+    while text and _text_size(draw, text + "…", font)[0] > max_w:
+        text = text[:-1]
+    return text + "…"
+
+
+def _wrap_skills(draw, prefix: str, skills: list[str], font, max_w: int,
+                 *, max_lines: int) -> list[str]:
+    """Lay a player's skill list out over up to `max_lines` lines.
+
+    The first line carries `prefix` (#/name/stats); skills flow on after
+    it and wrap to fresh lines as the width fills. If the list still
+    overruns `max_lines`, the final kept line gets a ", …" ellipsis so
+    it's clear more skills exist."""
+    if not skills:
+        return [_ellipsize(draw, prefix + "—", font, max_w)]
+    lines: list[str] = []
+    cur = prefix
+    cur_has_skill = False
+    for sk in skills:
+        piece = sk if not cur_has_skill else ", " + sk
+        if not cur_has_skill or _text_size(draw, cur + piece, font)[0] <= max_w:
+            cur += piece
+            cur_has_skill = True
+        else:
+            lines.append(cur)
+            cur = sk
+            cur_has_skill = True
+    if cur_has_skill:
+        lines.append(cur)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = _ellipsize(draw, lines[-1] + ", …", font, max_w)
+    return [_ellipsize(draw, ln, font, max_w) for ln in lines]
+
+
+# Human-readable result text for the action log.
+_BLOCK_RESULT = {1: "Attacker Down", 2: "Both Down", 3: "Push",
+                 4: "Push", 5: "Stumble", 6: "POW!"}
+_ACTION_VERB = {"block": "Block", "dodge": "Dodge", "gfi": "Go For It",
+                "pickup": "Pick Up", "pass": "Pass", "catch": "Catch",
+                "armor": "Armour", "injury": "Injury"}
+
+
+def _action_log_lines(dice, player_lookup: dict[str, PlayerInfo]):
+    """One readable "what was just rolled" line per visible DiceGroup.
+
+    Returns a list of (text, colour). Block lines name the chosen face;
+    d6 lines show the roll vs the needed value and pass/fail; armor and
+    injury lines show the 2d6 sum (and whether armour broke)."""
+    out: list[tuple[str, tuple[int, int, int]]] = []
+    for g in dice:
+        info = player_lookup.get(g.actor_id) if g.actor_id else None
+        who = info.name if info else None
+        color = (HOME_COLOR if info.side == "home" else AWAY_COLOR) if info else TEXT
+        if g.kind == "block":
+            if (g.chosen_index is not None and len(g.rolls) > 1
+                    and 0 <= g.chosen_index < len(g.rolls)):
+                res = _BLOCK_RESULT.get(g.rolls[g.chosen_index], str(g.rolls[g.chosen_index]))
+            else:
+                res = " / ".join(_BLOCK_RESULT.get(v, str(v)) for v in g.rolls)
+            txt = f"{who}: Block — {res}" if who else f"Block — {res}"
+        elif g.kind == "2d6":
+            label = _ACTION_VERB.get(g.label, g.label.title())
+            txt = f"{label} {g.rolls[0]}+{g.rolls[1]} = {sum(g.rolls)}"
+            if g.label == "armor" and g.successful is not None:
+                txt += " — broken" if g.successful else " — holds"
+            color = TEXT
+        else:  # d6
+            label = _ACTION_VERB.get(g.label, g.label.title())
+            need = f" (need {g.minimum}+)" if g.minimum else ""
+            outcome = (" — success" if g.successful is True
+                       else " — failed" if g.successful is False else "")
+            base = f"{label} {g.rolls[0]}{need}{outcome}"
+            txt = f"{who}: {base}" if who else base
+        out.append((txt, color))
+    return out
+
+
+def _draw_action_log(img: Image.Image, draw: ImageDraw.ImageDraw, lay: Layout,
+                     dice, player_lookup: dict[str, PlayerInfo], font) -> None:
+    """Translucent "ACTION" ticker pinned to the top-left of the pitch,
+    listing the roll(s) currently on screen so the viewer always sees
+    what was rolled and how it resolved."""
+    lines = _action_log_lines(dice, player_lookup)
+    if not lines:
+        return
+    pad = 8
+    line_h = _text_size(draw, "Ag", font)[1] + 6
+    title = "ACTION"
+    title_h = _text_size(draw, title, font)[1] + 4
+    max_panel_w = lay.pitch_w - 8
+    widths = [_text_size(draw, t, font)[0] for t, _ in lines]
+    widths.append(_text_size(draw, title, font)[0])
+    box_w = min(max(widths) + 2 * pad, max_panel_w)
+    box_h = title_h + len(lines) * line_h + 2 * pad
+    # In vertical the top row is an endzone carrying the team-name label,
+    # so drop the panel just below it; in horizontal the endzones are the
+    # left/right columns and the top corner is clear.
+    x0 = lay.ox + 4
+    y0 = lay.oy + (TILE + 4 if lay.orientation == "vertical" else 4)
+    panel = Image.new("RGBA", (max(1, box_w), max(1, box_h)), (8, 12, 14, 210))
+    img.alpha_composite(panel, (x0, y0))
+    draw.text((x0 + pad, y0 + pad), title, fill=DIM_TEXT, font=font)
+    y = y0 + pad + title_h
+    for t, c in lines:
+        draw.text((x0 + pad, y), _ellipsize(draw, t, font, box_w - 2 * pad), fill=c, font=font)
+        y += line_h
 
 
 def _draw_prone_slash(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int) -> None:

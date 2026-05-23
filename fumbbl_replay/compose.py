@@ -121,7 +121,7 @@ def _concat_clips(clips: Sequence[Path], out_path: Path) -> bool:
 
     Encode settings are tuned for maximum compatibility:
       profile:v main   - widely supported by hardware decoders
-      level:v 4.0      - up to 1080p30 / our 960x1804 (1.73 Mpix)
+      level:v 4.0      - up to 1080p30 / our 960x1966 (1.89 Mpix)
       bf 0             - no b-frames; some legacy players struggle
       pix_fmt yuv420p  - standard 4:2:0
       aac LC 192k      - LC profile, standard sample rate
