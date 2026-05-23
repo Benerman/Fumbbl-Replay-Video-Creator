@@ -5,13 +5,11 @@ This repo has two workflows under `.github/workflows/`:
 | Workflow | Trigger | Runner | What it does |
 |---|---|---|---|
 | `ci.yml` | every push, every PR | GitHub-hosted | Compile-check, import smoke test, docker build. No host access. |
-| `deploy.yml` | **CI success on `main`** (auto) + manual click | **self-hosted** on your VPS | `git pull` + `docker compose build` + `docker compose up -d` |
+| `deploy.yml` | **manual click only** | **self-hosted** on your VPS | `git pull` + `docker compose build` + `docker compose up -d` |
 
-**`main` auto-deploys.** When you push (or merge) to `main`, CI runs first; the moment it passes, the deploy workflow fires and updates the running docker image on the VPS. This is wired through `workflow_run` (deploy starts only after the `CI` workflow completes successfully on `main`) rather than a raw `on: push:` — so a commit that fails to compile, import, or build a working image is **never** deployed. The job's `if:` guard enforces the CI-success check.
+**Deploy is a manual step.** The deploy workflow only ever runs when you click **Run workflow** in the Actions tab — there is deliberately no `on: push:` or `workflow_run:` trigger. Merging to `main` does **not** deploy. This is the primary control on the self-hosted runner: it executes workflow code directly on the production box, so nothing reaches it without a human explicitly asking.
 
-You can still deploy or roll back manually any time via **Actions → Deploy → Run workflow** (the `workflow_dispatch` path), which accepts any branch, tag, or commit SHA.
-
-Because `main` is what reaches production automatically, the branch protection in step 4 below (PR + review + required CI checks) is what keeps unvetted code off it — it's now load-bearing, not optional.
+Branch protection on `main` (step 4 below) still matters — it keeps unvetted code off the ref you'll usually pick to deploy — but the manual click is what actually guards production.
 
 ## One-time host setup
 
@@ -102,27 +100,26 @@ The deploy workflow defaults to deploying `main`. Make sure `main` only contains
 - ❌ Allow force pushes (off)
 - ❌ Allow deletions (off)
 
-### 5. Optional: add a required-approval gate
+### 5. Optional: add a second required-approval gate
 
-Auto-deploy means a green `main` reaches the VPS with no human in the loop. If you want a confirmation click before the host touches anything — gating **both** the automatic and manual paths — wrap the deploy in a GitHub Environment:
+Deploy already requires a manual click. If you want an *additional* approval step on top of that — useful when more than one person can trigger deploys, or to force a deliberate confirm — wrap the deploy in a GitHub Environment:
 
 1. **Settings → Environments → New environment** → name it `production`.
 2. Check **Required reviewers** and add yourself (or whoever should approve).
 3. Edit `.github/workflows/deploy.yml` and uncomment the `environment: production` line.
 
-Now each deploy (including the auto one after CI passes) pauses on a "Waiting for approval" screen until a reviewer clicks Approve. (Yes, you can require yourself — it adds a confirm-click but doesn't block solo development.) Leave it off if you want fully hands-off deploys on merge to `main`.
+Now each "Run workflow" click pauses on a "Waiting for approval" screen until a reviewer clicks Approve. (Yes, you can require yourself — it adds a confirm-click but doesn't block solo development.)
 
 ## How to deploy
 
-The normal path is hands-off:
+Deploy is always an explicit manual action:
 
 1. Make changes on a feature branch.
 2. Open a PR. CI runs automatically on the PR.
 3. Get CI green → review → merge to `main`.
-4. CI re-runs on `main`; when it passes, **Deploy fires automatically**. The self-hosted runner pulls the new code, rebuilds, and restarts the bot + worker. Watch it under the **Actions** tab → **Deploy**.
+4. When you're ready to ship, go to **Actions** tab → **Deploy** → **Run workflow** → ref `main` (or any branch / tag / SHA) → **Run workflow**.
 5. (If you enabled the environment gate) Approve the deploy on the resulting waiting screen.
-
-Need to push something out of band (or re-run a deploy)? Use the manual button: **Actions → Deploy → Run workflow** → ref `main` (or any branch / tag / SHA).
+6. The self-hosted runner pulls that ref, rebuilds, and restarts the bot + worker. Logs are visible in the Actions run.
 
 ## How to roll back
 

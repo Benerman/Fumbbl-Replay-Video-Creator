@@ -1,35 +1,29 @@
 # Deploy to the self-hosted runner on the VPS.
 #
-# Two ways in, both of which end up running deploy/deploy.sh on the host
-# (git pull + docker compose build + docker compose up -d):
+# MANUAL ONLY. This workflow runs deploy/deploy.sh on the host
+# (git pull + docker compose build + docker compose up -d), and the only
+# way to start it is to click "Run workflow" in the Actions tab. There is
+# deliberately NO `on: push:` / `workflow_run:` trigger — nothing reaches
+# the self-hosted runner without a human explicitly asking for it.
 #
-#   1. AUTOMATIC — every push to `main` deploys, but ONLY after the CI
-#      workflow finishes successfully for that commit. This is wired via
-#      `workflow_run` (not `on: push`) so a commit that fails to compile,
-#      import, or build into a working docker image is NEVER deployed.
-#      The `if:` guard below enforces the success check.
-#   2. MANUAL — `workflow_dispatch` lets you deploy/roll back any branch,
-#      tag, or commit SHA on demand from the Actions tab.
+# Why manual: the self-hosted runner executes whatever this workflow says,
+# directly on the production box. Auto-deploying on every green commit
+# would mean any merge to `main` runs code on the VPS unattended. Keeping
+# it a manual step is the primary control on that.
 #
-# Safety still rests on:
-#   - Branch protection on `main` (PR + review + required CI checks) so
-#     only vetted code reaches main in the first place.
-#   - The CI gate above: deploy can't fire until CI is green on the commit.
-#   - A self-hosted runner labelled `fumbbl-deploy`, so GitHub-hosted
+# Layered safety:
+#   - workflow_dispatch only — no automatic trigger of any kind.
+#   - Self-hosted runner labelled `fumbbl-deploy`, so GitHub-hosted
 #     runners can't pick this job up by mistake.
-#   - Optional GitHub Environment approval (see `environment:` below):
-#     turns the automatic path into "auto-deploy after a human approves".
+#   - Branch protection on `main` (PR + review + required CI checks) keeps
+#     unvetted code off the ref you'll typically deploy.
+#   - Optional GitHub Environment approval (see `environment:` below) adds
+#     a second human approval gate on top of the manual click.
 
 name: Deploy
 
 on:
-  # Automatic: fire when CI completes on main. The job-level `if:` only
-  # lets it proceed when that CI run actually succeeded.
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
-  # Manual: deploy or roll back any ref on demand.
+  # Manual only: deploy or roll back any branch, tag, or commit SHA.
   workflow_dispatch:
     inputs:
       ref:
@@ -51,22 +45,17 @@ jobs:
   deploy:
     name: docker compose up on host
     runs-on: [self-hosted, fumbbl-deploy]
-    # Gate the automatic path on CI success. The manual path
-    # (workflow_dispatch) carries no workflow_run context, so let it
-    # through unconditionally.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
 
-    # Uncomment to require manual approval from GitHub Environments
-    # reviewers before this job starts (this gates BOTH the automatic and
-    # manual paths). Configure reviewers at:
+    # Uncomment to require approval from GitHub Environments reviewers
+    # before this job starts — a second gate on top of the manual click.
+    # Configure reviewers at:
     # Settings → Environments → production → Required reviewers.
     # environment: production
 
     steps:
       - name: Show deploy parameters
         run: |
-          echo "Event:         ${{ github.event_name }}"
-          echo "Deploying ref: ${{ inputs.ref || github.event.workflow_run.head_sha }}"
+          echo "Deploying ref: ${{ inputs.ref }}"
           echo "Triggered by:  ${{ github.actor }}"
           echo "Host:          $(hostname)"
           echo "Workspace:     $RUNNER_WORKSPACE"
@@ -77,13 +66,9 @@ jobs:
         # `vars.DEPLOY_PATH` repo variable overrides if your clone
         # lives somewhere else (set at: Settings → Secrets and
         # variables → Actions → Variables).
-        #
-        # DEPLOY_REF resolves to the manual input when dispatched, else
-        # the exact commit CI just validated (head_sha) — deploying the
-        # SHA, not the moving `main` ref, keeps it deterministic.
         env:
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH || format('/opt/{0}', github.event.repository.name) }}
-          DEPLOY_REF: ${{ inputs.ref || github.event.workflow_run.head_sha }}
+          DEPLOY_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
           if [ ! -d "$DEPLOY_PATH/.git" ]; then
