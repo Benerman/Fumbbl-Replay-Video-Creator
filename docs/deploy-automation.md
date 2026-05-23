@@ -15,19 +15,28 @@ Branch protection on `main` (step 4 below) still matters — it keeps unvetted c
 
 ### 1. Clone the repo on the host
 
+> **The clone must be owned by the runner user.** The deploy workflow runs as the unprivileged runner user and does `git fetch` + `git checkout` in this directory. If you clone it as root (or any other user), the runner can't write `.git` and every deploy dies with `cannot open '.git/FETCH_HEAD': Permission denied`. Do the clone *as the runner user*, or `chown` it to them afterwards.
+
 ```bash
 # Put the canonical deploy clone at /opt/Fumbbl-Replay-Video-Creator.
 # If you've been deploying from elsewhere, either move it here or
 # set a `DEPLOY_PATH` repository variable in GitHub (see step 3).
+RUNNER_USER=runner    # whoever the GitHub Actions runner runs as
 sudo mkdir -p /opt/Fumbbl-Replay-Video-Creator
-sudo chown "$USER:$USER" /opt/Fumbbl-Replay-Video-Creator
-git clone https://github.com/Benerman/Fumbbl-Replay-Video-Creator.git /opt/Fumbbl-Replay-Video-Creator
+sudo chown "$RUNNER_USER:$RUNNER_USER" /opt/Fumbbl-Replay-Video-Creator
+sudo -u "$RUNNER_USER" git clone https://github.com/Benerman/Fumbbl-Replay-Video-Creator.git /opt/Fumbbl-Replay-Video-Creator
 cd /opt/Fumbbl-Replay-Video-Creator
-cp deploy/.env.example deploy/.env
-$EDITOR deploy/.env  # paste your secrets
+sudo -u "$RUNNER_USER" cp deploy/.env.example deploy/.env
+sudo -u "$RUNNER_USER" $EDITOR deploy/.env  # paste your secrets
 ```
 
-If you already have a working clone (with `deploy/.env` filled in), just `git pull` it to a clean state — don't re-clone.
+If you already have a clone that was created by the wrong user, fix ownership in place (no need to re-clone):
+
+```bash
+sudo chown -R runner:runner /opt/Fumbbl-Replay-Video-Creator
+```
+
+If you already have a working clone (with `deploy/.env` filled in) owned by the runner user, just `git pull` it to a clean state — don't re-clone.
 
 ### 2. Install the GitHub Actions self-hosted runner
 
@@ -156,5 +165,6 @@ Same script the workflow calls. Useful if the runner is offline or for emergency
 
 - **"No runner found for labels [self-hosted, fumbbl-deploy]"**: the runner is offline, or has the wrong labels. Check **Settings → Actions → Runners** — the runner should be "Idle". Re-register cleanly by re-running `./deploy/runner-setup.sh` (it uses `--replace`), or set `RUNNER_LABELS=...` first to change labels.
 - **"$DEPLOY_PATH is not a git checkout"**: the runner is running as a user without read access to `/opt/Fumbbl-Replay-Video-Creator`, or you set `DEPLOY_PATH` to the wrong location. `ls -la /opt/Fumbbl-Replay-Video-Creator/.git` while su'd to the runner user.
-- **Containers don't restart after deploy**: `docker compose up -d` only restarts a container if its image/config changed. If you only changed Python source that's copied at build time, the rebuild + up-d will catch it. If you only changed a mounted volume, no restart is needed.
+- **"cannot open '.git/FETCH_HEAD': Permission denied"** (or `deploy.sh` errors that it can't write `.git`): the deploy clone is owned by a different user than the runner. The runner can't `git fetch`. Fix ownership on the host: `sudo chown -R runner:runner /opt/Fumbbl-Replay-Video-Creator` (swap in your runner user). `deploy.sh` now preflights this and prints the exact command. A related symptom is git's `detected dubious ownership` error — same root cause, same fix.
+- **Containers don't pick up new code after deploy**: `deploy.sh` now does a full `docker compose down` then `up -d` (after `build --pull`), so the stack always restarts from the freshly built image. If you're running a customised deploy that uses only `docker compose up -d`, note that `up -d` skips recreating a service whose compose config didn't change even when its image did — which is why the full down/up exists.
 - **Runner shows "Idle" but workflow stuck on "Queued"**: usually a label mismatch. The workflow says `[self-hosted, fumbbl-deploy]`; the runner must have both labels.

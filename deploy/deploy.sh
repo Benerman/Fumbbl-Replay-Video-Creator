@@ -20,6 +20,20 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$REPO_ROOT"
 
+# Preflight: the user running this must be able to write the git checkout.
+# The #1 self-hosted-deploy failure is a clone created by root while the
+# runner runs as an unprivileged user — `git fetch` then dies with
+# "cannot open '.git/FETCH_HEAD': Permission denied". Fail early with the
+# exact fix instead of a cryptic git error.
+if ! ( : > .git/.deploy_write_test ) 2>/dev/null; then
+    echo "ERROR: $(whoami) cannot write to $REPO_ROOT/.git"
+    echo "The deploy clone isn't owned by the user running this deploy."
+    echo "Fix on the host (swap in the runner user if it differs):"
+    echo "    sudo chown -R $(whoami):$(whoami) $REPO_ROOT"
+    exit 1
+fi
+rm -f .git/.deploy_write_test
+
 echo "==> [$(date -u +%H:%M:%SZ)] Fetching from origin..."
 git fetch --all --tags --prune
 
@@ -43,9 +57,23 @@ echo "==> Deploying $DEPLOYED_SHA: $DEPLOYED_MSG"
 cd deploy
 
 echo "==> Building images..."
-docker compose build
+# --pull refreshes the base-image layers so OS/security updates land too.
+# No-op for any service that has no build: section.
+docker compose build --pull
 
-echo "==> Restarting services..."
+echo "==> Pulling any prebuilt (non-built) images..."
+# Covers compose files whose services use a prebuilt `image:` instead of a
+# `build:` section — without this, `up -d` would keep the stale image.
+# Harmless no-op (errors swallowed) for build-from-source services.
+docker compose pull --quiet 2>/dev/null || true
+
+echo "==> Stopping the current stack for a clean restart..."
+# Full down (not just `up -d`) so we always start from fresh containers
+# off the image we just built — `up -d` alone can skip recreating a
+# service whose compose config didn't change even though its image did.
+docker compose down --remove-orphans
+
+echo "==> Starting a fresh stack..."
 docker compose up -d
 
 echo "==> Status:"
