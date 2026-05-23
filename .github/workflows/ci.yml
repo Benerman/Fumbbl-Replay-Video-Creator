@@ -2,9 +2,11 @@
 # GitHub-hosted runners. Never touches the production host.
 #
 # Purpose: prove that what's on a branch is at least syntactically
-# valid, importable, and builds into a working docker image BEFORE
-# you decide to deploy it. The deploy workflow (deploy.yml) is the
-# only path that touches the VPS, and it requires a manual click.
+# valid, importable, and builds into a working docker image BEFORE it
+# ships. The deploy workflow (deploy.yml) is the only path that touches
+# the VPS; it triggers automatically once THIS workflow passes on `main`
+# (via workflow_run), and can also be run manually for rollbacks. So a
+# green run here on `main` is what actually authorises a deploy.
 
 name: CI
 
