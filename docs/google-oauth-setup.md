@@ -68,12 +68,20 @@ can come back any time.
 2. **Audience** tab
    - **User type**: **External**. (Internal only appears if you
      have a Google Workspace org; pick External for personal use.)
-   - **Publishing status**: leave as **Testing** — that's fine
-     indefinitely as long as you stay under 100 test users.
-   - **Test users** section: click **+ Add users** and add every
-     Google account that will authorize the bot — your own, plus
-     any guild admins who will run `/highlight-config set-youtube`.
-     Up to 100.
+   - **Publishing status**: click **Publish app** to move it to
+     **In production**. ⚠️ **This matters.** An app left in **Testing**
+     has its OAuth **refresh tokens expire after 7 days**, so uploads
+     break about a week after you authorize and fail with
+     `invalid_grant: Token has been expired or revoked`. Production
+     does **not** expire tokens that way. You do **not** need to
+     complete Google's verification for a personal bot — unverified
+     Production apps still work (you'll see a "This app isn't verified"
+     warning during authorization, and a ~100-user cap), but the tokens
+     persist instead of dying weekly.
+   - **Test users** section: only relevant while in Testing. If you
+     deliberately stay in Testing, add every Google account that will
+     authorize the bot here (up to 100) — and expect to re-authorize
+     each one every 7 days.
    - Click **Save**.
 
 3. **Data Access** tab  ← *this is where the scopes live now*
@@ -108,12 +116,17 @@ If you see the old wizard:
 
 #### Either way
 
-You don't need to publish the app. Testing mode works indefinitely
-as long as you stay under 100 test users. During the OAuth flow,
-test users will see a "This app isn't verified" screen — click
+For a bot you intend to keep running, **publish the app to Production**
+(Audience tab → **Publish app**). You still don't need Google's
+verification — unverified Production apps work fine; during the OAuth
+flow you'll see a "This app isn't verified" screen, where you click
 **Advanced → Go to FUMBBL Highlights Bot (unsafe)** to proceed.
-Non-test-users see a hard block (this is the intended security
-boundary).
+
+Do **not** leave the app in **Testing** for ongoing use: Google expires
+refresh tokens for Testing-status apps after **7 days**, so uploads
+start failing with `invalid_grant: Token has been expired or revoked`
+about a week after each authorization. (Testing mode is fine only while
+you're still setting things up and re-authorizing often.)
 
 ### 4. Create the OAuth Client ID
 
@@ -165,6 +178,20 @@ can reach this screen; others see a hard block.
 verification process"** → The Google account trying to authorize
 isn't on the test-users list. Add them in
 **OAuth consent screen → Test users**.
+
+**"invalid_grant: Token has been expired or revoked"** during an
+upload (the job fails at the `credentials` step) → The stored refresh
+token is dead. The most common cause by far is the OAuth consent screen
+being in **Testing** mode, which expires refresh tokens after **7
+days**. Fix it permanently: **Audience → Publish app** (Production).
+Then re-mint the token — for the operator's default channel run
+`docker compose exec worker python -m services.worker.youtube_upload
+--bootstrap-default`; for a per-guild channel the server admin re-runs
+`/highlight-config set-youtube`. Other causes: someone revoked the bot
+at <https://myaccount.google.com/permissions>, or the Google account's
+password changed. ⚠️ This is **not** a `FERNET_MASTER_KEY` problem (a
+bad key throws a decrypt error, not `invalid_grant`) — do **not** rotate
+that key, it would orphan every stored token.
 
 **No refresh_token returned during bootstrap** → Google only mints
 a refresh token on the **first** consent for a given user+client.

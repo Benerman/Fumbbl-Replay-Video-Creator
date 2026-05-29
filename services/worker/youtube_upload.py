@@ -22,6 +22,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -45,11 +46,51 @@ class UploadResult:
     url: str
 
 
+class CredentialsExpiredError(RuntimeError):
+    """A stored YouTube refresh token was rejected by Google (invalid_grant
+    — expired or revoked).
+
+    Carries an admin-actionable message, keyed on whether the dead token was
+    a per-guild override or the bot's default, so the worker surfaces re-auth
+    instructions instead of the raw OAuth error. `.source` is "guild" or
+    "default" for callers that want to branch on it."""
+
+    def __init__(self, source: str):
+        self.source = source
+        if source == "guild":
+            message = (
+                "This server's YouTube authorization has expired or been "
+                "revoked. A server admin needs to re-run the "
+                "/highlight-config set-youtube command to reconnect the "
+                "channel. If this keeps happening about once a week, the "
+                "Google OAuth consent screen is in Testing mode (refresh "
+                "tokens expire after 7 days there) — publish it to "
+                "Production to stop the expiry."
+            )
+        else:
+            message = (
+                "The bot's default YouTube authorization has expired or been "
+                "revoked. The operator needs to re-mint it on the host with: "
+                "docker compose exec worker python -m "
+                "services.worker.youtube_upload --bootstrap-default. If this "
+                "recurs weekly, publish the Google OAuth consent screen to "
+                "Production to stop the 7-day token expiry."
+            )
+        super().__init__(message)
+
+
+def _is_token_expired_or_revoked(err: Exception) -> bool:
+    """True when Google's refresh error is an invalid_grant (the token is
+    dead), as opposed to a transient network/5xx refresh failure."""
+    text = str(err).lower()
+    return "invalid_grant" in text or "expired or revoked" in text
+
+
 def _client_secret_payload(settings) -> dict:
     return json.loads(settings.youtube_client_secrets_json.read_text())
 
 
-def _credentials_from_refresh_token(settings, refresh_token: str) -> Credentials:
+def _credentials_from_refresh_token(settings, refresh_token: str, *, source: str) -> Credentials:
     sub = _client_secret_payload(settings)
     sub = sub.get("installed") or sub.get("web")
     creds = Credentials(
@@ -60,7 +101,15 @@ def _credentials_from_refresh_token(settings, refresh_token: str) -> Credentials
         client_secret=sub["client_secret"],
         scopes=YT_SCOPES,
     )
-    creds.refresh(Request())
+    try:
+        creds.refresh(Request())
+    except RefreshError as e:
+        # A dead refresh token (invalid_grant) is an operator/admin problem,
+        # not a transient fault — translate it into actionable re-auth
+        # guidance. Anything else (network, 5xx) propagates unchanged.
+        if _is_token_expired_or_revoked(e):
+            raise CredentialsExpiredError(source) from e
+        raise
     return creds
 
 
@@ -74,7 +123,7 @@ def load_credentials_for_guild(guild_id: int, crypto: TokenCrypto) -> tuple[Cred
     row = db.get_guild_config(guild_id)
     if row is not None and row["yt_refresh_token_encrypted"]:
         rt = crypto.decrypt(row["yt_refresh_token_encrypted"])
-        return _credentials_from_refresh_token(settings, rt), False
+        return _credentials_from_refresh_token(settings, rt, source="guild"), False
     defaults = db.get_bot_defaults()
     if defaults is None:
         raise RuntimeError(
@@ -83,7 +132,7 @@ def load_credentials_for_guild(guild_id: int, crypto: TokenCrypto) -> tuple[Cred
             "--bootstrap-default` once before any uploads can happen."
         )
     rt = crypto.decrypt(defaults["yt_refresh_token_encrypted"])
-    return _credentials_from_refresh_token(settings, rt), True
+    return _credentials_from_refresh_token(settings, rt, source="default"), True
 
 
 def upload_video(
